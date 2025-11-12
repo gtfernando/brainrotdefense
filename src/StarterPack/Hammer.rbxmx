@@ -1,0 +1,116 @@
+<roblox version="4">
+  <Item class="Tool" referent="0">
+    <Properties>
+      <string name="Name">Hammer</string>
+      <BinaryString name="AttributesSerialize"></BinaryString>
+      <bool name="CanBeDropped">true</bool>
+      <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+      <bool name="Enabled">true</bool>
+      <CoordinateFrame name="Grip">
+        <X>0</X>
+        <Y>0</Y>
+        <Z>0</Z>
+        <R00>1</R00>
+        <R01>0</R01>
+        <R02>0</R02>
+        <R10>0</R10>
+        <R11>1</R11>
+        <R12>0</R12>
+        <R20>0</R20>
+        <R21>0</R21>
+        <R22>1</R22>
+      </CoordinateFrame>
+      <token name="LevelOfDetail">0</token>
+      <bool name="ManualActivationOnly">false</bool>
+      <CoordinateFrame name="ModelMeshCFrame">
+        <X>0</X>
+        <Y>0</Y>
+        <Z>0</Z>
+        <R00>1</R00>
+        <R01>0</R01>
+        <R02>0</R02>
+        <R10>0</R10>
+        <R11>1</R11>
+        <R12>0</R12>
+        <R20>0</R20>
+        <R21>0</R21>
+        <R22>1</R22>
+      </CoordinateFrame>
+      <SharedString name="ModelMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
+      <Vector3 name="ModelMeshSize">
+        <X>0</X>
+        <Y>0</Y>
+        <Z>0</Z>
+      </Vector3>
+      <token name="ModelStreamingMode">0</token>
+      <bool name="NeedsPivotMigration">false</bool>
+      <Ref name="PrimaryPart">null</Ref>
+      <bool name="RequiresHandle">false</bool>
+      <bool name="DefinesCapabilities">false</bool>
+      <float name="ScaleFactor">1</float>
+      <int64 name="SourceAssetId">-1</int64>
+      <BinaryString name="Tags"></BinaryString>
+      <Content name="TextureContent">
+        <null>
+        </null>
+      </Content>
+      <string name="ToolTip"></string>
+      <OptionalCoordinateFrame name="WorldPivotData">
+      </OptionalCoordinateFrame>
+    </Properties>
+    <Item class="LocalScript" referent="1">
+      <Properties>
+        <string name="Name">LockedZoneTool</string>
+        <BinaryString name="AttributesSerialize"></BinaryString>
+        <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+        <bool name="Disabled">false</bool>
+        <ContentId name="LinkedSource">
+          <null>
+          </null>
+        </ContentId>
+        <token name="RunContext">0</token>
+        <bool name="DefinesCapabilities">false</bool>
+        <string name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local tool = script.Parent
+
+local placementModule = ReplicatedStorage:WaitForChild("Placement") :: ModuleScript
+local clientFolder = placementModule:WaitForChild("Client")
+local inspectorModule = clientFolder:WaitForChild("HoverMouse") :: ModuleScript
+local HoverMouse = require(inspectorModule)
+
+local inspector = HoverMouse.new(tool)
+
+local function unequip()
+	inspector:Disable()
+end
+
+tool.Equipped:Connect(function()
+	inspector:Enable()
+end)
+
+tool.Unequipped:Connect(unequip)
+
+tool.Activated:Connect(function()
+	inspector:HandleActivation()
+end)
+
+tool.AncestryChanged:Connect(function(_, parent)
+	if parent == nil then
+		unequip()
+	end
+end)
+
+tool.Destroying:Connect(function()
+	inspector:Destroy()
+end)
+]]></string>
+        <int64 name="SourceAssetId">-1</int64>
+        <BinaryString name="Tags"></BinaryString>
+      </Properties>
+    </Item>
+  </Item>
+  <SharedStrings>
+    <SharedString md5="rxNJufX5oaagQE3qNtzJSQ=="></SharedString>
+  </SharedStrings>
+</roblox>

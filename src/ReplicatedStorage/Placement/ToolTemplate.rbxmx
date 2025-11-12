@@ -1,0 +1,120 @@
+<roblox version="4">
+  <Item class="Tool" referent="0">
+    <Properties>
+      <string name="Name">ToolTemplate</string>
+      <BinaryString name="AttributesSerialize"></BinaryString>
+      <bool name="CanBeDropped">false</bool>
+      <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+      <bool name="Enabled">true</bool>
+      <CoordinateFrame name="Grip">
+        <X>0</X>
+        <Y>0</Y>
+        <Z>0</Z>
+        <R00>1</R00>
+        <R01>0</R01>
+        <R02>0</R02>
+        <R10>0</R10>
+        <R11>1</R11>
+        <R12>0</R12>
+        <R20>0</R20>
+        <R21>0</R21>
+        <R22>1</R22>
+      </CoordinateFrame>
+      <token name="LevelOfDetail">0</token>
+      <bool name="ManualActivationOnly">false</bool>
+      <CoordinateFrame name="ModelMeshCFrame">
+        <X>0</X>
+        <Y>0</Y>
+        <Z>0</Z>
+        <R00>1</R00>
+        <R01>0</R01>
+        <R02>0</R02>
+        <R10>0</R10>
+        <R11>1</R11>
+        <R12>0</R12>
+        <R20>0</R20>
+        <R21>0</R21>
+        <R22>1</R22>
+      </CoordinateFrame>
+      <SharedString name="ModelMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
+      <Vector3 name="ModelMeshSize">
+        <X>0</X>
+        <Y>0</Y>
+        <Z>0</Z>
+      </Vector3>
+      <token name="ModelStreamingMode">0</token>
+      <bool name="NeedsPivotMigration">false</bool>
+      <Ref name="PrimaryPart">null</Ref>
+      <bool name="RequiresHandle">false</bool>
+      <bool name="DefinesCapabilities">false</bool>
+      <float name="ScaleFactor">1</float>
+      <int64 name="SourceAssetId">-1</int64>
+      <BinaryString name="Tags"></BinaryString>
+      <Content name="TextureContent">
+        <null>
+        </null>
+      </Content>
+      <string name="ToolTip"></string>
+      <OptionalCoordinateFrame name="WorldPivotData">
+      </OptionalCoordinateFrame>
+    </Properties>
+    <Item class="LocalScript" referent="1">
+      <Properties>
+        <string name="Name">PlacementTool</string>
+        <BinaryString name="AttributesSerialize"></BinaryString>
+        <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+        <bool name="Disabled">false</bool>
+        <ContentId name="LinkedSource">
+          <null>
+          </null>
+        </ContentId>
+        <token name="RunContext">0</token>
+        <bool name="DefinesCapabilities">false</bool>
+        <string name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local tool = script.Parent
+local assetId = tool.Name
+
+local placementModule = ReplicatedStorage:WaitForChild("Placement")
+local controllerModule = placementModule:WaitForChild("Client"):WaitForChild("Controller")
+local Controller = require(controllerModule)
+
+local function startPlacement()
+	Controller:Start()
+	local token = tool:GetAttribute("PlacementToken")
+	local level = tool:GetAttribute("PlacementLevel")
+	local ok, err = pcall(function()
+		Controller:StartPlacement(assetId, token, level)
+	end)
+	if not ok then
+		warn(`Failed to start placement for "{assetId}": {err}`)
+	end
+end
+
+local function stopPlacement()
+	if Controller.GetActiveAsset and Controller:GetActiveAsset() == assetId then
+		Controller:StopPlacement()
+	end
+end
+
+tool.Equipped:Connect(startPlacement)
+tool.Unequipped:Connect(stopPlacement)
+tool.AncestryChanged:Connect(function(_, parent)
+	if not parent then
+		stopPlacement()
+	end
+end)
+
+tool.Destroying:Connect(function()
+	stopPlacement()
+end)
+]]></string>
+        <int64 name="SourceAssetId">-1</int64>
+        <BinaryString name="Tags"></BinaryString>
+      </Properties>
+    </Item>
+  </Item>
+  <SharedStrings>
+    <SharedString md5="rxNJufX5oaagQE3qNtzJSQ=="></SharedString>
+  </SharedStrings>
+</roblox>

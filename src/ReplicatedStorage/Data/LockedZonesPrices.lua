@@ -1,0 +1,25 @@
+local LockedZonesPrices = {
+    LockedZone_1 = 1000,
+    LockedZone_5 = 2000,
+    LockedZone_6 = 2000,
+    LockedZone_7 = 2000,
+    LockedZone_9 = 2000,
+    LockedZone_10 = 2000,
+    LockedZone_11 = 2000,
+    LockedZone_12 = 3000,
+    LockedZone_13 = 2000,
+    LockedZone_14 = 3000,
+    LockedZone_15 = 3000,
+    LockedZone_16 = 3000,
+    LockedZone_17 = 3000,
+    LockedZone_18 = 3000,
+    LockedZone_19 = 3000,
+    LockedZone_20 = 3000,
+    LockedZone_21 = 4000,
+    LockedZone_22 = 4000,
+    LockedZone_23 = 4000,
+    LockedZone_24 = 4000,
+    LockedZone_25 = 4000,
+}
+
+return LockedZonesPrices
