@@ -11,6 +11,15 @@ local BrainrotData = require(ReplicatedStorage.Data.Brainrots)
 
 local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
 local BrainrotAssetsFolder = AssetsFolder:WaitForChild("Brainrots")
+local DesignFolder = ReplicatedStorage:FindFirstChild("Design")
+local BrainrotsUiTemplate: BillboardGui? = nil
+
+if DesignFolder then
+	local candidate = DesignFolder:FindFirstChild("BrainrotsUI")
+	if candidate and candidate:IsA("BillboardGui") then
+		BrainrotsUiTemplate = candidate
+	end
+end
 local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui")
 
@@ -29,8 +38,9 @@ export type AgentState = "toBuilding" | "hidden" | "toSpawn"
 
 type HealthUiHandle = {
 	billboard: BillboardGui,
-	label: TextLabel,
-	fill: Frame,
+	healthText: TextLabel?,
+	fill: Frame?,
+	nameText: TextLabel?,
 }
 
 export type ClientAgent = {
@@ -216,57 +226,129 @@ local function ensureHealthUi(agent: ClientAgent): HealthUiHandle?
 			existing.billboard.Adornee = primary
 		end
 		existing.billboard.Enabled = agent.state ~= "hidden"
+		if existing.nameText then
+			existing.nameText.Text = agent.brainrotName
+		end
 		return existing
 	end
 
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "BrainrotHealth"
-	billboard.Size = HEALTH_BAR_SIZE
-	billboard.StudsOffset = HEALTH_BAR_OFFSET
-	billboard.AlwaysOnTop = true
-	billboard.MaxDistance = 400
-	billboard.Adornee = primary
-	billboard.Enabled = agent.state ~= "hidden"
-	billboard.Parent = model
+	local billboard: BillboardGui? = nil
+	local fillFrame: Frame? = nil
+	local healthLabel: TextLabel? = nil
+	local nameLabel: TextLabel? = nil
 
-	local frame = Instance.new("Frame")
-	frame.Name = "Container"
-	frame.Size = UDim2.fromScale(1, 1)
-	frame.BackgroundTransparency = 1
-	frame.BorderSizePixel = 0
-	frame.Parent = billboard
+	if not BrainrotsUiTemplate then
+		local design = DesignFolder
+		if not design or not design.Parent then
+			design = ReplicatedStorage:FindFirstChild("Design")
+			if not design then
+				design = ReplicatedStorage:WaitForChild("Design", 5)
+			end
+			DesignFolder = design
+		end
 
-	local label = Instance.new("TextLabel")
-	label.Name = "HealthLabel"
-	label.Size = UDim2.new(1, -12, 0, 18)
-	label.Position = UDim2.new(0, 6, 0, 4)
-	label.BackgroundTransparency = 1
-	label.Font = Enum.Font.GothamBold
-	label.TextSize = 16
-	label.TextColor3 = Color3.fromRGB(255, 255, 255)
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Text = ""
-	label.Parent = frame
+		if design then
+			local candidate = design:FindFirstChild("BrainrotsUI")
+			if not candidate then
+				candidate = design:WaitForChild("BrainrotsUI", 5)
+			end
+			if candidate and candidate:IsA("BillboardGui") then
+				BrainrotsUiTemplate = candidate
+			end
+		end
+	end
 
-	local barBg = Instance.new("Frame")
-	barBg.Name = "HealthBar"
-	barBg.Size = UDim2.new(1, -12, 0, 12)
-	barBg.Position = UDim2.new(0, 6, 0, 26)
-	barBg.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-	barBg.BorderSizePixel = 0
-	barBg.Parent = frame
+	if BrainrotsUiTemplate then
+		local cloned = BrainrotsUiTemplate:Clone()
+		cloned.Name = "BrainrotHealth"
+		cloned.Adornee = primary
+		cloned.Enabled = agent.state ~= "hidden"
+		cloned.Parent = model
 
-	local fill = Instance.new("Frame")
-	fill.Name = "Fill"
-	fill.Size = UDim2.new(1, 0, 1, 0)
-	fill.BackgroundColor3 = Color3.fromRGB(60, 200, 80)
-	fill.BorderSizePixel = 0
-	fill.Parent = barBg
+		local healthBar = cloned:FindFirstChild("HealthBar", true)
+		if healthBar and healthBar:IsA("Frame") then
+			local fillCandidate = healthBar:FindFirstChild("Fill")
+			if fillCandidate and fillCandidate:IsA("Frame") then
+				fillFrame = fillCandidate
+			end
+		end
+
+		local healthInstance = cloned:FindFirstChild("Health", true)
+		if healthInstance and healthInstance:IsA("TextLabel") then
+			healthLabel = healthInstance
+		end
+
+		local nameInstance = cloned:FindFirstChild("BrainrotName", true)
+		if nameInstance and nameInstance:IsA("TextLabel") then
+			nameInstance.Text = agent.brainrotName
+			nameLabel = nameInstance
+		end
+
+		billboard = cloned
+	else
+		local fallback = Instance.new("BillboardGui")
+		fallback.Name = "BrainrotHealth"
+		fallback.Size = HEALTH_BAR_SIZE
+		fallback.StudsOffset = HEALTH_BAR_OFFSET
+		fallback.AlwaysOnTop = true
+		fallback.MaxDistance = 400
+		fallback.Adornee = primary
+		fallback.Enabled = agent.state ~= "hidden"
+		fallback.Parent = model
+
+		local frame = Instance.new("Frame")
+		frame.Name = "Container"
+		frame.Size = UDim2.fromScale(1, 1)
+		frame.BackgroundTransparency = 1
+		frame.BorderSizePixel = 0
+		frame.Parent = fallback
+
+		local fallbackHealthLabel = Instance.new("TextLabel")
+		fallbackHealthLabel.Name = "HealthLabel"
+		fallbackHealthLabel.Size = UDim2.new(1, -12, 0, 18)
+		fallbackHealthLabel.Position = UDim2.new(0, 6, 0, 4)
+		fallbackHealthLabel.BackgroundTransparency = 1
+		fallbackHealthLabel.Font = Enum.Font.GothamBold
+		fallbackHealthLabel.TextSize = 16
+		fallbackHealthLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		fallbackHealthLabel.TextXAlignment = Enum.TextXAlignment.Left
+		fallbackHealthLabel.Text = ""
+		fallbackHealthLabel.Parent = frame
+
+		local barBg = Instance.new("Frame")
+		barBg.Name = "HealthBar"
+		barBg.Size = UDim2.new(1, -12, 0, 12)
+		barBg.Position = UDim2.new(0, 6, 0, 26)
+		barBg.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+		barBg.BorderSizePixel = 0
+		barBg.Parent = frame
+
+		local fallbackFill = Instance.new("Frame")
+		fallbackFill.Name = "Fill"
+		fallbackFill.Size = UDim2.new(1, 0, 1, 0)
+		fallbackFill.BackgroundColor3 = Color3.fromRGB(60, 200, 80)
+		fallbackFill.BorderSizePixel = 0
+		fallbackFill.Parent = barBg
+
+		healthLabel = fallbackHealthLabel
+		fillFrame = fallbackFill
+		billboard = fallback
+	end
+
+	local activeBillboard = billboard
+	if not activeBillboard then
+		return nil
+	end
+
+	activeBillboard.StudsOffset = HEALTH_BAR_OFFSET
+	activeBillboard.AlwaysOnTop = true
+	activeBillboard.MaxDistance = 400
 
 	local handle: HealthUiHandle = {
-		billboard = billboard,
-		label = label,
-		fill = fill,
+		billboard = activeBillboard,
+		fill = fillFrame,
+		healthText = healthLabel,
+		nameText = nameLabel,
 	}
 
 	agent.healthUi = handle
@@ -284,16 +366,27 @@ local function updateHealthUi(agent: ClientAgent)
 	handle.billboard.Enabled = agent.state ~= "hidden"
 
 	local ratio = math.clamp(health / maxHealth, 0, 1)
-	handle.fill.Size = UDim2.new(ratio, 0, 1, 0)
-	if ratio <= 0.15 then
-		handle.fill.BackgroundColor3 = Color3.fromRGB(220, 70, 60)
-	elseif ratio <= 0.45 then
-		handle.fill.BackgroundColor3 = Color3.fromRGB(235, 170, 60)
-	else
-		handle.fill.BackgroundColor3 = Color3.fromRGB(60, 200, 80)
+	local fillFrame = handle.fill
+	if fillFrame then
+		fillFrame.Size = UDim2.new(ratio, 0, 1, 0)
+		if ratio <= 0.15 then
+			fillFrame.BackgroundColor3 = Color3.fromRGB(220, 70, 60)
+		elseif ratio <= 0.45 then
+			fillFrame.BackgroundColor3 = Color3.fromRGB(235, 170, 60)
+		else
+			fillFrame.BackgroundColor3 = Color3.fromRGB(60, 200, 80)
+		end
 	end
 
-	handle.label.Text = string.format("%d / %d", math.floor(health + 0.5), math.floor(maxHealth + 0.5))
+	local healthLabel = handle.healthText
+	if healthLabel then
+		healthLabel.Text = string.format("%d / %d", math.floor(health + 0.5), math.floor(maxHealth + 0.5))
+	end
+
+	local nameLabel = handle.nameText
+	if nameLabel then
+		nameLabel.Text = agent.brainrotName
+	end
 end
 
 local function setAgentHealth(agent: ClientAgent, healthValue: number?, maxHealthValue: number?)

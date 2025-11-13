@@ -155,6 +155,7 @@ type BrainrotAgent = {
 	progressionValue: number,
 	faceRotationAdjustment: CFrame?,
 	attackAnchor: Vector3?,
+	extents: Vector3?,
 }
 
 type PlotController = {
@@ -175,6 +176,8 @@ type PlotController = {
 	cachedPlacements: { number },
 	assetRefreshElapsed: number,
 	hadAssets: boolean,
+	recentSpawnsOrder: { SpawnEntry },
+	recentSpawnsSet: { [SpawnEntry]: boolean },
 }
 
 type SchedulerHandle = { _id: number }
@@ -284,6 +287,92 @@ local function gatherBrainrotAssets()
 
 	if next(brainrotAssets) == nil then
 		warn("BrainrotTourismService did not find any usable brainrot models in ReplicatedStorage.Assets.Brainrots")
+	end
+end
+
+local function ensureRecentSpawnTracking(controller: PlotController)
+	if not controller.recentSpawnsOrder then
+		controller.recentSpawnsOrder = {}
+	end
+	if not controller.recentSpawnsSet then
+		controller.recentSpawnsSet = {}
+	end
+end
+
+local function selectSpawnEntry(controller: PlotController, usedDuringWave: { [SpawnEntry]: boolean }): SpawnEntry?
+	local navEntry = controller.navEntry
+	local spawns = navEntry and navEntry.spawns
+	if not spawns or #spawns == 0 then
+		return nil
+	end
+
+	local available = {}
+	for _, entry in ipairs(spawns) do
+		if not usedDuringWave[entry] then
+			available[#available + 1] = entry
+		end
+	end
+
+	if #available == 0 then
+		for _, entry in ipairs(spawns) do
+			available[#available + 1] = entry
+		end
+	end
+
+	local recentSet = controller.recentSpawnsSet
+	if recentSet and next(recentSet) ~= nil and #available > 1 then
+		local filtered = {}
+		for _, entry in ipairs(available) do
+			if not recentSet[entry] then
+				filtered[#filtered + 1] = entry
+			end
+		end
+		if #filtered > 0 then
+			available = filtered
+		end
+	end
+
+	return available[rng:NextInteger(1, #available)]
+end
+
+local function registerRecentSpawn(controller: PlotController, spawnEntry: SpawnEntry?, flankSpread: number)
+	if not spawnEntry then
+		return
+	end
+
+	local navEntry = controller.navEntry
+	local spawns = navEntry and navEntry.spawns
+	local spawnCount = spawns and #spawns or 0
+	if spawnCount <= 1 then
+		controller.recentSpawnsOrder = {}
+		controller.recentSpawnsSet = {}
+		return
+	end
+
+	ensureRecentSpawnTracking(controller)
+	local order = controller.recentSpawnsOrder
+	local set = controller.recentSpawnsSet
+	if not order or not set then
+		return
+	end
+
+	for index = #order, 1, -1 do
+		if order[index] == spawnEntry then
+			table.remove(order, index)
+			break
+		end
+	end
+
+	order[#order + 1] = spawnEntry
+	set[spawnEntry] = true
+
+	local historyTarget = math.max(flankSpread * 2, 1)
+	local maxHistory = math.clamp(historyTarget, 1, math.min(spawnCount - 1, 6))
+	while #order > maxHistory do
+		local removed = table.remove(order, 1)
+		if removed then
+			set[removed] = nil
+		end
 	end
 end
 
@@ -745,6 +834,7 @@ local function buildAgentSnapshot(controller: PlotController, agent: BrainrotAge
 		maxHealth = agent.maxHealth,
 		faceAdjustment = agent.faceRotationAdjustment,
 		targetPosition = agent.targetPosition,
+		extents = agent.extents,
 	}
 end
 
@@ -876,6 +966,7 @@ local function buildAgentDetails(controller: PlotController, agent: BrainrotAgen
 				cframe = spawnEntry.cframe,
 			}
 			else nil,
+		extents = agent.extents,
 	}
 end
 
@@ -1087,6 +1178,8 @@ local function spawnAgent(
 		return false
 	end
 
+	local templateExtents = template:GetExtentsSize() * 0.5
+
 	local faceAdjustment = computeFaceRotationAdjustment(template, primary)
 	controller.activeTargets[targetAsset.entity] = true
 	controller.agentCounter += 1
@@ -1122,6 +1215,12 @@ local function spawnAgent(
 		faceRotationAdjustment = faceAdjustment,
 	}
 
+	agent.extents = Vector3.new(
+		math.max(0.5, templateExtents.X),
+		math.max(0.5, templateExtents.Y),
+		math.max(0.5, templateExtents.Z)
+	)
+
 		applyMutationEffectsToAgent(agent, currentMutationTotals)
 		controller.agents[#controller.agents + 1] = agent
 		registerAgent(controller, agent)
@@ -1146,11 +1245,6 @@ local function spawnWave(
 
 	local spawnEntries = controller.navEntry.spawns
 	local usedSpawns: { [SpawnEntry]: boolean } = {}
-	local uniqueUsed = 0
-	local uniqueLimit = 0
-	if spawnEntries and #spawnEntries > 0 then
-		uniqueLimit = math.min(flankSpread, #spawnEntries)
-	end
 
 	local spawned = 0
 	local attempts = 0
@@ -1163,30 +1257,16 @@ local function spawnWave(
 
 		attempts += 1
 		local spawnPreference: SpawnEntry? = nil
-
 		if spawnEntries and #spawnEntries > 0 then
-			if uniqueLimit > 0 and uniqueUsed < uniqueLimit then
-				local innerAttempts = 0
-				repeat
-					local candidate = spawnEntries[rng:NextInteger(1, #spawnEntries)]
-					innerAttempts += 1
-					if not usedSpawns[candidate] then
-						usedSpawns[candidate] = true
-						uniqueUsed += 1
-						spawnPreference = candidate
-						break
-					elseif innerAttempts >= 4 then
-						spawnPreference = candidate
-						break
-					end
-				until innerAttempts >= 4
-			else
-				spawnPreference = spawnEntries[rng:NextInteger(1, #spawnEntries)]
-			end
+			spawnPreference = selectSpawnEntry(controller, usedSpawns)
 		end
 
 		if spawnAgent(controller, plotEntity, ownerUserId, placements, assets, spawnPreference) then
 			spawned += 1
+			if spawnPreference then
+				usedSpawns[spawnPreference] = true
+				registerRecentSpawn(controller, spawnPreference, flankSpread)
+			end
 		end
 	end
 
@@ -1543,6 +1623,8 @@ cleanupController = function(controller: PlotController)
 	controller.lastAssetsSnapshot = {}
 	controller.assetRefreshElapsed = ASSET_REFRESH_INTERVAL
 	controller.hadAssets = false
+	controller.recentSpawnsOrder = {}
+	controller.recentSpawnsSet = {}
 end
 
 function BrainrotTourismService.Init()
@@ -1581,6 +1663,8 @@ function BrainrotTourismService.Init()
 				cachedPlacements = {},
 				assetRefreshElapsed = ASSET_REFRESH_INTERVAL,
 				hadAssets = false,
+				recentSpawnsOrder = {},
+				recentSpawnsSet = {},
 			}
 		end
 	end

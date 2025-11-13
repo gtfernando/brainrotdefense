@@ -14,19 +14,22 @@ local BrainrotTourismServiceModule = ModulesFolder:WaitForChild("BrainrotTourism
 local PlotRegistryModule = PlacementFolder:WaitForChild("PlotRegistry") :: ModuleScript
 local BatToolPacketsModule = NetworkFolder:WaitForChild("BatToolPackets") :: ModuleScript
 local ChestServiceModule = StoresFolder:WaitForChild("ChestService") :: ModuleScript
+local CrateTopoServiceModule = ModulesFolder:WaitForChild("CrateTopoService") :: ModuleScript
 
 local BrainrotTourismService = require(BrainrotTourismServiceModule) :: any
 local PlotRegistry = require(PlotRegistryModule) :: any
 local BatToolPackets = require(BatToolPacketsModule) :: any
 local ChestService = require(ChestServiceModule) :: any
+local CrateTopoService = require(CrateTopoServiceModule) :: any
 
 local BatToolService = {}
 
 local DETECTION_DURATION = 0.25
-local HITBOX_SIZE = Vector3.new(9, 9, 9)
-local HITBOX_OFFSET = Vector3.new(0, 0, 0)
-local HITBOX_MARGIN = 2
-local MAX_DETECTION_RADIUS = 15
+local HITBOX_SIZE = Vector3.new(6, 6, 6)
+local HITBOX_HALF_SIZE = HITBOX_SIZE * 0.5
+local HITBOX_MARGIN = 0.75
+local HITBOX_OFFSET = Vector3.new(0, 0, -3)
+local MAX_DETECTION_RADIUS = HITBOX_HALF_SIZE.Magnitude + 4
 local DAMAGE_MIN = 10
 local DAMAGE_MAX = 18
 
@@ -41,6 +44,13 @@ local function shallowCopy(source: { [string]: any }): { [string]: any }
 		copy[key] = value
 	end
 	return copy
+end
+
+local function asVector3(value: any): Vector3?
+	if typeof(value) == "Vector3" then
+		return value
+	end
+	return nil
 end
 
 local DetectionSession = {}
@@ -97,44 +107,24 @@ function DetectionSession:spawnHitbox()
 	hitbox.Name = "BatDetectionHitbox"
 	hitbox.Size = HITBOX_SIZE
 	hitbox.Material = Enum.Material.ForceField
-	hitbox.Transparency = 1
+	hitbox.Transparency = 0
 	hitbox.CanCollide = false
 	hitbox.CanTouch = false
 	hitbox.CanQuery = false
 	hitbox.Massless = true
 	hitbox.Anchored = false
-	hitbox.CFrame = self:getDetectionCFrame()
+	local rootBase = root :: BasePart
+	local offsetCFrame = CFrame.new(HITBOX_OFFSET)
+	hitbox.CFrame = rootBase.CFrame * offsetCFrame
 	hitbox.Parent = character
 
-	local attachment = Instance.new("Attachment")
-	attachment.Name = "BatDetectionAttachment"
-	attachment.Parent = hitbox
-
-	local rootAttachment = Instance.new("Attachment")
-	rootAttachment.Name = "BatDetectionRootAttachment"
-	rootAttachment.CFrame = CFrame.new(HITBOX_OFFSET)
-	rootAttachment.Parent = root
-
-	local alignPosition = Instance.new("AlignPosition")
-	alignPosition.Name = "BatDetectionAlignPosition"
-	alignPosition.Attachment0 = attachment
-	alignPosition.Attachment1 = rootAttachment
-	alignPosition.MaxForce = math.huge
-	alignPosition.Responsiveness = 200
-	alignPosition.RigidityEnabled = true
-	alignPosition.Parent = hitbox
-
-	local alignOrientation = Instance.new("AlignOrientation")
-	alignOrientation.Name = "BatDetectionAlignOrientation"
-	alignOrientation.Attachment0 = attachment
-	alignOrientation.Attachment1 = rootAttachment
-	alignOrientation.MaxTorque = math.huge
-	alignOrientation.Responsiveness = 200
-	alignOrientation.RigidityEnabled = true
-	alignOrientation.Parent = hitbox
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = "BatDetectionWeld"
+	weld.Part0 = rootBase
+	weld.Part1 = hitbox
+	weld.Parent = hitbox
 
 	Debris:AddItem(hitbox, DETECTION_DURATION)
-	Debris:AddItem(rootAttachment, DETECTION_DURATION)
 end
 
 local function buildResultPayload(
@@ -177,14 +167,13 @@ function DetectionSession:execute()
 	self:spawnHitbox()
 
 	local detectionCFrame = self:getDetectionCFrame()
-	local baseHalfSize = HITBOX_SIZE * 0.5
 	local halfSize = Vector3.new(
-		baseHalfSize.X + HITBOX_MARGIN,
-		baseHalfSize.Y + HITBOX_MARGIN,
-		baseHalfSize.Z + HITBOX_MARGIN
+		HITBOX_HALF_SIZE.X + HITBOX_MARGIN,
+		HITBOX_HALF_SIZE.Y + HITBOX_MARGIN,
+		HITBOX_HALF_SIZE.Z + HITBOX_MARGIN
 	)
-	local sphereRadius = math.max(MAX_DETECTION_RADIUS, math.max(halfSize.X, halfSize.Z))
-	local maxHorizontalRange = sphereRadius
+	local sphereRadius = math.min(MAX_DETECTION_RADIUS, math.max(halfSize.X, halfSize.Z))
+	local maxHorizontalRange = math.max(halfSize.X, halfSize.Z)
 	local rejections = {}
 	local damageAppliedCount = 0
 	local function computeClosest(detail: AgentDetail?): (number?, Vector3?, string?)
@@ -261,6 +250,13 @@ function DetectionSession:execute()
 		local position = detail.position
 		local targetPosition = detail.targetPosition
 		local anchorPosition = detail.attackAnchor
+		local extents = asVector3(detail.extents)
+
+		local positionVector = asVector3(position)
+		local centerRelative: Vector3? = nil
+		if positionVector then
+			centerRelative = (detectionCFrame:PointToObjectSpace(positionVector)) :: Vector3
+		end
 
 		local checkpoints = {
 			{ key = "position", point = position },
@@ -271,6 +267,21 @@ function DetectionSession:execute()
 		local relative: Vector3? = nil
 		local hitKind: string? = nil
 		local referencePoint: Vector3? = nil
+
+		if centerRelative and extents and positionVector then
+			local overlap = math.abs(centerRelative.X) <= (halfSize.X + extents.X)
+				and math.abs(centerRelative.Y) <= (halfSize.Y + extents.Y)
+				and math.abs(centerRelative.Z) <= (halfSize.Z + extents.Z)
+			if overlap then
+				relative = Vector3.new(
+					math.clamp(centerRelative.X, -halfSize.X, halfSize.X),
+					math.clamp(centerRelative.Y, -halfSize.Y, halfSize.Y),
+					math.clamp(centerRelative.Z, -halfSize.Z, halfSize.Z)
+				)
+				hitKind = "extents:overlap"
+				referencePoint = positionVector
+			end
+		end
 
 		for _, entry in ipairs(checkpoints) do
 			local candidateRelative, candidateKind = evaluatePoint(entry.point, entry.key)
@@ -296,6 +307,20 @@ function DetectionSession:execute()
 						break
 					end
 				end
+			end
+		end
+
+		if not relative and centerRelative then
+			local radius = if extents then extents.Magnitude else 0
+
+			if centerRelative.Magnitude <= sphereRadius + radius then
+				relative = Vector3.new(
+					math.clamp(centerRelative.X, -halfSize.X, halfSize.X),
+					math.clamp(centerRelative.Y, -halfSize.Y, halfSize.Y),
+					math.clamp(centerRelative.Z, -halfSize.Z, halfSize.Z)
+				)
+				hitKind = "extents:sphere"
+				referencePoint = positionVector or referencePoint
 			end
 		end
 
@@ -375,6 +400,13 @@ function DetectionSession:execute()
 		end
 	end
 
+	local crateCandidateCount = 0
+	for _, detail in ipairs(CrateTopoService.GetCrateTargetsForOwner(self.player.UserId)) do
+		if push(detail) then
+			crateCandidateCount += 1
+		end
+	end
+
 	local detected: { AgentDetail } = {}
 	for _, detail in ipairs(candidates) do
 		local copy, rejection = evaluateCandidate(detail)
@@ -386,12 +418,20 @@ function DetectionSession:execute()
 			local damageSuccess = false
 			local remainingHealth = nil
 			local appliedDamage = 0
+			local extras: { [string]: any }? = nil
 			if damageAmount > 0 then
 				if targetKind == "Chest" then
 					damageSuccess, remainingHealth, appliedDamage = ChestService.ApplyDamage(copy.id, damageAmount, {
 						tool = "Bat",
 						attacker = self.player.UserId,
 						reference = "BatHit",
+					})
+				elseif targetKind == "CrateTopo" then
+					damageSuccess, remainingHealth, appliedDamage, extras = CrateTopoService.ApplyDamage(copy.id, damageAmount, {
+						tool = "Bat",
+						attacker = self.player.UserId,
+						reference = copy.hitContext or "BatHit",
+						player = self.player,
 					})
 				else
 					damageSuccess, remainingHealth = BrainrotTourismService.ApplyDamage(copy.id, damageAmount, {
@@ -408,11 +448,21 @@ function DetectionSession:execute()
 			end
 
 			if damageSuccess then
-				local dealt = if targetKind == "Chest" then appliedDamage else damageAmount
+				local dealt
+				if targetKind == "Chest" or targetKind == "CrateTopo" then
+					dealt = appliedDamage
+				else
+					dealt = damageAmount
+				end
 				copy.damageDealt = dealt
 				copy.wasDamaged = dealt > 0
 				if remainingHealth ~= nil then
 					copy.health = remainingHealth
+				end
+				if extras then
+					for key, value in extras do
+						copy[key] = value
+					end
 				end
 				if copy.wasDamaged then
 					damageAppliedCount += 1
@@ -420,6 +470,11 @@ function DetectionSession:execute()
 			else
 				copy.damageDealt = 0
 				copy.wasDamaged = false
+				if extras then
+					for key, value in extras do
+						copy[key] = value
+					end
+				end
 			end
 
 			detected[#detected + 1] = copy
@@ -440,6 +495,7 @@ function DetectionSession:execute()
 		plotCandidates = plotCandidateCount,
 		fallbackCandidates = fallbackCandidateCount,
 		chestCandidates = chestCandidateCount,
+		crateCandidates = crateCandidateCount,
 		totalCandidates = #candidates,
 		detected = #detected,
 		rejections = rejections,

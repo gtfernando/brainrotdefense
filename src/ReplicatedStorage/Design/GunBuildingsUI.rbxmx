@@ -24,7 +24,7 @@
         <Z>0</Z>
       </Vector3>
       <float name="LightInfluence">0</float>
-      <float name="MaxDistance">INF</float>
+      <float name="MaxDistance">0</float>
       <Ref name="PlayerToHideFrom">null</Ref>
       <bool name="ResetOnSpawn">true</bool>
       <Ref name="RootLocalizationTable">null</Ref>
@@ -154,9 +154,6 @@
             </Family>
             <Weight>700</Weight>
             <Style>Normal</Style>
-            <CachedFaceId>
-              <url>rbxasset://fonts/Montserrat-Bold.ttf</url>
-            </CachedFaceId>
           </Font>
           <bool name="Interactable">true</bool>
           <int name="LayoutOrder">0</int>
@@ -253,9 +250,6 @@
             </Family>
             <Weight>700</Weight>
             <Style>Normal</Style>
-            <CachedFaceId>
-              <url>rbxasset://fonts/Montserrat-Bold.ttf</url>
-            </CachedFaceId>
           </Font>
           <bool name="Interactable">true</bool>
           <int name="LayoutOrder">0</int>

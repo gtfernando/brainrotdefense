@@ -157,7 +157,7 @@ function BatCombatFramework:_playHitEffect(agent: { [string]: any })
 	local highlight = Instance.new("Highlight")
 	highlight.Name = "BatHitHighlight"
 	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	local fillColor = if targetKind == "Chest" then Color3.fromRGB(255, 255, 255) else Color3.fromRGB(255, 0, 0)
+	local fillColor = if targetKind == "Chest" or targetKind == "CrateTopo" then Color3.fromRGB(255, 255, 255) else Color3.fromRGB(255, 0, 0)
 	highlight.FillColor = fillColor
 	highlight.FillTransparency = 0.3
 	highlight.OutlineTransparency = 1
