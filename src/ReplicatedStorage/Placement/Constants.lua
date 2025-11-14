@@ -20,7 +20,7 @@ local Constants = {
 			ENABLED = true,
 			TILE_CELLS = Vector2.new(4, 4), -- 4 cells * 5 studs = 20 stud tiles
 			DEFAULT_LOCKED = true,
-			UNLOCKED_ZONE_IDS = { 2, 3, 4, 8 },
+				UNLOCKED_ZONE_IDS = { 13, 12, 8, 19, 14 },
 			OVERRIDES = {},
 		},
 		FOLDER_NAME = "PlacementPlots",

@@ -48,6 +48,8 @@ export type ClientAgent = {
 	model: Model,
 	primary: BasePart,
 	animationHandle: AnimationHandle?,
+	sprintAnimationHandle: AnimationHandle?,
+	activeAnimation: "default" | "sprint",
 	state: AgentState,
 	path: { Vector3 },
 	pathIndex: number,
@@ -62,6 +64,7 @@ export type ClientAgent = {
 	health: number?,
 	maxHealth: number?,
 	healthUi: HealthUiHandle?,
+	isSprinting: boolean,
 }
 
 local visitorsRoot: Folder? = nil
@@ -1025,37 +1028,70 @@ local function computeFaceRotationAdjustment(model: Model, primary: BasePart): C
 	return rotationOnly:Inverse()
 end
 
-local function resolveAnimationId(brainrotName: string): string?
-	local data = BrainrotData[brainrotName]
-	if typeof(data) ~= "table" then
+local function coerceAnimationId(raw: any): string?
+	if raw == nil then
 		return nil
 	end
 
-	local animationId = data.animationId or data.AnimationId
-	if animationId == nil or animationId == 0 then
-		return nil
-	end
-
-	if typeof(animationId) == "number" then
-		if animationId == 0 then
+	if typeof(raw) == "number" then
+		if raw == 0 then
 			return nil
 		end
-		return "rbxassetid://" .. tostring(animationId)
-	elseif typeof(animationId) == "string" then
-		if animationId == "" or animationId == "0" then
+		return "rbxassetid://" .. tostring(raw)
+	elseif typeof(raw) == "string" then
+		if raw == "" or raw == "0" then
 			return nil
 		end
-		if animationId:match("^rbxassetid://") then
-			return animationId
+		if raw:match("^rbxassetid://") then
+			return raw
 		end
-		return "rbxassetid://" .. animationId
+		return "rbxassetid://" .. raw
 	end
 
 	return nil
 end
 
-local function loadAnimation(model: Model, brainrotName: string): AnimationHandle?
-	local animationId = resolveAnimationId(brainrotName)
+local sprintAnimationKeys = {
+	"runAnimationId",
+	"RunAnimationId",
+	"sprintAnimationId",
+	"SprintAnimationId",
+	"runningAnimationId",
+	"RunningAnimationId",
+}
+
+local defaultAnimationKeys = {
+	"animationId",
+	"AnimationId",
+}
+
+local function resolveAnimationId(brainrotName: string, variant: "default" | "sprint"?): string?
+	local data = BrainrotData[brainrotName]
+	if typeof(data) ~= "table" then
+		return nil
+	end
+
+	if variant == "sprint" then
+		for _, key in ipairs(sprintAnimationKeys) do
+			local asset = coerceAnimationId((data :: any)[key])
+			if asset then
+				return asset
+			end
+		end
+	end
+
+	for _, key in ipairs(defaultAnimationKeys) do
+		local asset = coerceAnimationId((data :: any)[key])
+		if asset then
+			return asset
+		end
+	end
+
+	return nil
+end
+
+local function loadAnimation(model: Model, brainrotName: string, variant: "default" | "sprint"?, autoplay: boolean?): AnimationHandle?
+	local animationId = resolveAnimationId(brainrotName, variant)
 	if not animationId then
 		return nil
 	end
@@ -1072,19 +1108,79 @@ local function loadAnimation(model: Model, brainrotName: string): AnimationHandl
 		animator = newAnimator
 	end
 
+	local suffix = if variant == "sprint" then "_Sprint" else "_Brainrot"
 	local animation = Instance.new("Animation")
-	animation.Name = brainrotName .. "_BrainrotAnimation"
+	animation.Name = brainrotName .. suffix .. "Animation"
 	animation.AnimationId = animationId
 	animation.Parent = model
 
 	local track = (animator :: Animator):LoadAnimation(animation)
 	track.Looped = true
-	track:Play()
+	if autoplay ~= false then
+		track:Play()
+	end
 
 	return {
 		animation = animation,
 		track = track,
 	}
+end
+
+local function playAnimationHandle(handle: AnimationHandle?)
+	if not handle then
+		return
+	end
+
+	local track = handle.track
+	if not track then
+		return
+	end
+
+	if track.IsPlaying then
+		track:AdjustSpeed(1)
+	else
+		track:Play()
+	end
+end
+
+local function stopAnimationHandle(handle: AnimationHandle?)
+	if not handle then
+		return
+	end
+
+	local track = handle.track
+	if not track then
+		return
+	end
+
+	track:Stop()
+end
+
+local function setAgentSprintVisual(agent: ClientAgent, isSprinting: boolean)
+	if agent.isSprinting == isSprinting then
+		return
+	end
+
+	agent.isSprinting = isSprinting
+	local defaultHandle = agent.animationHandle
+	local sprintHandle = agent.sprintAnimationHandle
+
+	if sprintHandle then
+		if isSprinting then
+			stopAnimationHandle(defaultHandle)
+			playAnimationHandle(sprintHandle)
+			agent.activeAnimation = "sprint"
+		else
+			stopAnimationHandle(sprintHandle)
+			playAnimationHandle(defaultHandle)
+			agent.activeAnimation = "default"
+		end
+	else
+		if defaultHandle and defaultHandle.track then
+			defaultHandle.track:AdjustSpeed(isSprinting and 1.45 or 1)
+		end
+		agent.activeAnimation = "default"
+	end
 end
 
 local function pivotModel(model: Model, position: Vector3, direction: Vector3?, rotationAdjustment: CFrame?)
@@ -1101,9 +1197,7 @@ local function cleanupAnimation(handle: AnimationHandle?)
 		return
 	end
 
-	if handle.track then
-		handle.track:Stop()
-	end
+	stopAnimationHandle(handle)
 	if handle.animation then
 		handle.animation:Destroy()
 	end
@@ -1111,6 +1205,7 @@ end
 
 local function destroyAgent(agent: ClientAgent)
 	cleanupAnimation(agent.animationHandle)
+	cleanupAnimation(agent.sprintAnimationHandle)
 	if agent.model then
 		agent.model:Destroy()
 	end
@@ -1192,6 +1287,10 @@ local function updateAgentState(agent: ClientAgent, data: any)
 	agent.buildingPosition = data.buildingPosition or agent.buildingPosition
 	agent.visitPosition = data.visitPosition or agent.visitPosition
 
+	if data.sprinting ~= nil then
+		setAgentSprintVisual(agent, data.sprinting == true)
+	end
+
 	if data.faceAdjustment then
 		agent.faceAdjustment = data.faceAdjustment
 	end
@@ -1240,7 +1339,8 @@ local function createAgent(data: any): ClientAgent?
 		model:PivotTo(spawnCFrame)
 	end
 
-	local animationHandle = loadAnimation(model, template.Name)
+	local animationHandle = loadAnimation(model, template.Name, nil, true)
+	local sprintAnimationHandle = loadAnimation(model, template.Name, "sprint", false)
 
 	local path = data.path or {}
 	local pathLength = #path
@@ -1256,6 +1356,8 @@ local function createAgent(data: any): ClientAgent?
 		model = model,
 		primary = primary,
 		animationHandle = animationHandle,
+		sprintAnimationHandle = sprintAnimationHandle,
+		activeAnimation = "default",
 		state = (data.state :: AgentState) or "toBuilding",
 		path = path,
 		pathIndex = initialIndex,
@@ -1267,9 +1369,11 @@ local function createAgent(data: any): ClientAgent?
 		visitPosition = data.visitPosition or data.position,
 		brainrotName = template.Name,
 		spawnCFrame = spawnCFrame,
+		isSprinting = false,
 	}
 
 	setAgentHealth(agent, tonumber((data :: any).health), tonumber((data :: any).maxHealth))
+	setAgentSprintVisual(agent, data.sprinting == true)
 
 	agents[agent.id] = agent
 	return agent
@@ -1310,6 +1414,7 @@ local function handleAgentHidden(data: any)
 	agent.path = {}
 	agent.pathIndex = 1
 	agent.visitPosition = agent.position
+	setAgentSprintVisual(agent, false)
 	applyTransform(agent)
 end
 
@@ -1334,6 +1439,7 @@ local function handleAgentReturn(data: any)
 	agent.position = data.reappearPosition or agent.visitPosition or agent.position
 	agent.visitPosition = agent.position
 	setAgentHealth(agent, tonumber((data :: any).health), tonumber((data :: any).maxHealth))
+	setAgentSprintVisual(agent, data.sprinting == true)
 	applyTransform(agent)
 end
 

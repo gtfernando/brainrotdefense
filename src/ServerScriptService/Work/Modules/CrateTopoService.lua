@@ -15,7 +15,6 @@ local PlotRegistry = require(ModulesFolder.Parent.Placement.PlotRegistry)
 local RunServiceScheduler = require(ModulesFolder.RunServiceScheduler)
 local PlacementInventory = require(ModulesFolder.PlacementInventory)
 local Profiles = require(ModulesFolder.Profiles)
-local ChestRewards = require(ModulesFolder.Parent.Stores.ChestRewards)
 local PlacementService = require(ModulesFolder.Parent.Placement.Service)
 
 local PlacementModule = ReplicatedStorage:WaitForChild("Placement")
@@ -23,6 +22,7 @@ local PlacementPackage = require(PlacementModule)
 local PlacementAssetRegistry = PlacementPackage.AssetRegistry
 
 local Catalog = require(ReplicatedStorage.Data.CrateTopoCatalog)
+local AmmoBuildings = require(ReplicatedStorage.Data.AmmoBuildings)
 
 type SchedulerHandle = any
 type PlotSlot = any
@@ -78,9 +78,13 @@ type NormalizedCrateDefinition = {
 }
 
 type SlotController = {
+	key: string,
 	slot: PlotSlot,
 	slotIndex: number?,
+	folderName: string,
 	folder: Folder,
+	rewardOverrides: { [string]: number }?,
+	assetTemplates: { [string]: Model }?,
 	ownerId: number?,
 	active: boolean,
 	destroyed: boolean,
@@ -128,6 +132,7 @@ type CrateState = {
 	purchaserUserId: number?,
 	highlight: Highlight?,
 	lastUiText: string?,
+	hitAnimationTrack: AnimationTrack?,
 }
 
 local DEFAULT_SETTINGS = {
@@ -151,18 +156,34 @@ local serviceState = {
 	totalWeight = 0,
 	assetFolder = nil :: Folder?,
 	assetTemplates = {} :: { [string]: Model },
-	controllers = {} :: { [PlotSlot]: SlotController },
+	gunAssetFolder = nil :: Folder?,
+	gunAssetTemplates = nil :: { [string]: Model }?,
+	controllers = {} :: { [string]: SlotController },
 	schedulerHandle = nil :: SchedulerHandle?,
 	missingAssets = {} :: { [string]: boolean },
 	globalRng = Random.new(),
 	uiTemplate = nil :: Instance?,
 	warnedMissingUi = false,
 	cratesById = {} :: { [string]: CrateState },
+	gunRewards = nil :: { [string]: number }?,
 }
 
 local HIGHLIGHT_DEFAULT_COLOR = Color3.fromRGB(255, 214, 94)
 local HIGHLIGHT_PURCHASED_COLOR = Color3.fromRGB(83, 255, 129)
 local HIGHLIGHT_DAMAGE_COLOR = Color3.fromRGB(255, 255, 255)
+local HIT_ANIMATION_ID = "rbxassetid://121494417865868"
+local HIT_ANIMATION_FADE_TIME = 0.05
+local HIT_ANIMATION_SPEED = 1
+
+local hitAnimationTemplate: Animation? = nil
+
+local DEFAULT_CRATE_FOLDER_NAME = "CrateTopo"
+local GUN_CRATE_FOLDER_NAME = "GunCrates"
+
+local GUN_SLOT_WHITELIST = {}
+for index = 1, 9 do
+	GUN_SLOT_WHITELIST[index] = true
+end
 
 local function sanitizeString(value: any): string?
 	if typeof(value) == "string" then
@@ -536,6 +557,14 @@ local function setCrateHighlightState(state: CrateState, enabled: boolean, color
 		return
 	end
 
+	if color == HIGHLIGHT_PURCHASED_COLOR then
+		highlight.Enabled = false
+		highlight.FillTransparency = 1
+		highlight.OutlineColor = HIGHLIGHT_DEFAULT_COLOR
+		highlight.FillColor = HIGHLIGHT_DEFAULT_COLOR
+		return
+	end
+
 	highlight.Enabled = enabled
 	if color then
 		highlight.OutlineColor = color
@@ -545,7 +574,13 @@ local function setCrateHighlightState(state: CrateState, enabled: boolean, color
 		highlight.FillColor = HIGHLIGHT_DEFAULT_COLOR
 	end
 
-	highlight.FillTransparency = if enabled then 0.65 else 1
+	if not enabled then
+		highlight.FillTransparency = 1
+	elseif color == HIGHLIGHT_PURCHASED_COLOR then
+		highlight.FillTransparency = 1
+	else
+		highlight.FillTransparency = 0.65
+	end
 end
 
 local function flashCrateHighlight(state: CrateState, color: Color3?)
@@ -566,10 +601,10 @@ local function flashCrateHighlight(state: CrateState, color: Color3?)
 		end
 
 		if state.status == "purchased" then
-			highlight.OutlineColor = HIGHLIGHT_PURCHASED_COLOR
-			highlight.FillColor = HIGHLIGHT_PURCHASED_COLOR
-			highlight.FillTransparency = 0.65
-			highlight.Enabled = true
+			highlight.OutlineColor = HIGHLIGHT_DEFAULT_COLOR
+			highlight.FillColor = HIGHLIGHT_DEFAULT_COLOR
+			highlight.FillTransparency = 1
+			highlight.Enabled = false
 		else
 			highlight.OutlineColor = HIGHLIGHT_DEFAULT_COLOR
 			highlight.FillColor = HIGHLIGHT_DEFAULT_COLOR
@@ -577,6 +612,89 @@ local function flashCrateHighlight(state: CrateState, color: Color3?)
 			highlight.Enabled = false
 		end
 	end)
+end
+
+local function getHitAnimation(): Animation
+	local cached = hitAnimationTemplate
+	if cached then
+		return cached
+	end
+
+	local animation = Instance.new("Animation")
+	animation.Name = "CrateTopoHitAnimation"
+	animation.AnimationId = HIT_ANIMATION_ID
+	hitAnimationTemplate = animation
+	return animation
+end
+
+local function ensureCrateAnimator(model: Model): Animator?
+	local controller = model:FindFirstChildWhichIsA("AnimationController", true)
+	if not controller then
+		return nil
+	end
+
+	local animator = controller:FindFirstChildOfClass("Animator")
+	if animator then
+		return animator
+	end
+
+	local newAnimator = Instance.new("Animator")
+	newAnimator.Name = "CrateTopoAnimator"
+	newAnimator.Parent = controller
+	return newAnimator
+end
+
+local function playCrateHitAnimation(state: CrateState)
+	local model = state.model
+	if not model then
+		return
+	end
+
+	local animator = ensureCrateAnimator(model)
+	if not animator then
+		return
+	end
+
+	local track = state.hitAnimationTrack
+	if not track or track.Parent ~= animator then
+		if track then
+			track:Destroy()
+		end
+
+		local ok, loadedTrackOrError = pcall(function()
+			return animator:LoadAnimation(getHitAnimation())
+		end)
+		if not ok then
+			warn(string.format("[CrateTopoService] Error al cargar animación de golpe: %s", tostring(loadedTrackOrError)))
+			state.hitAnimationTrack = nil
+			return
+		end
+
+		local loadedTrack = loadedTrackOrError :: AnimationTrack
+		loadedTrack.Name = "CrateTopoHitTrack"
+		loadedTrack.Looped = false
+		loadedTrack.Priority = Enum.AnimationPriority.Action
+		state.hitAnimationTrack = loadedTrack
+		track = loadedTrack
+	end
+
+	if not track then
+		return
+	end
+
+	local okPlay, playError = pcall(function()
+		if track.IsPlaying then
+			track:Stop(0)
+		end
+		track:Play(HIT_ANIMATION_FADE_TIME, 1, HIT_ANIMATION_SPEED)
+		if track.TimePosition ~= 0 then
+			track.TimePosition = 0
+		end
+	end)
+
+	if not okPlay then
+		warn(string.format("[CrateTopoService] Error al reproducir animación de golpe: %s", tostring(playError)))
+	end
 end
 
 local function updateCrateAttributes(state: CrateState)
@@ -605,6 +723,11 @@ local function createCrateState(
 	local ownerId = controller.ownerId
 	local maxHealth = math.max(1, math.floor(definition.maxHealth or serviceState.settings.maxHealth or DEFAULT_SETTINGS.maxHealth))
 
+	local rewards = definition.rewards and table.clone(definition.rewards) or nil
+	if controller.rewardOverrides then
+		rewards = controller.rewardOverrides
+	end
+
 	local state: CrateState = {
 		id = crateId,
 		definition = definition,
@@ -620,13 +743,14 @@ local function createCrateState(
 		slotIndex = slotIndex,
 		maxHealth = maxHealth,
 		health = maxHealth,
-		rewards = definition.rewards and table.clone(definition.rewards) or nil,
+		rewards = rewards,
 		spawnTime = os.clock(),
 		fullyExposedAt = nil,
 		purchasedAt = nil,
 		purchaserUserId = nil,
 		highlight = nil,
 		lastUiText = nil,
+		hitAnimationTrack = nil,
 	}
 
 	serviceState.cratesById[crateId] = state
@@ -673,6 +797,15 @@ local function cleanupCrateState(state: CrateState, destroyModel: boolean)
 		if highlight.Parent then
 			highlight:Destroy()
 		end
+	end
+
+	local hitTrack = state.hitAnimationTrack
+	if hitTrack then
+		state.hitAnimationTrack = nil
+		if hitTrack.IsPlaying then
+			hitTrack:Stop(0)
+		end
+		hitTrack:Destroy()
 	end
 
 	state.model = nil
@@ -842,6 +975,32 @@ local function buildCratePool(settings, cratesData: any): ({ NormalizedCrateDefi
 	return pool, totalWeight
 end
 
+local function buildGunRewardTable(ammoData: any): { [string]: number }
+	local rewards: { [string]: number } = {}
+	if typeof(ammoData) ~= "table" then
+		return rewards
+	end
+
+	for name, entry in ammoData do
+		if typeof(name) == "string" and name ~= "" then
+			local weight = 1
+			if typeof(entry) == "table" then
+				local dataBlock = entry.data or entry.Data
+				if typeof(dataBlock) == "table" then
+					local priceValue = dataBlock.Price or dataBlock.price
+					local numeric = tonumber(priceValue)
+					if numeric and numeric > 0 then
+						weight = math.max(1, math.floor(numeric + 0.5))
+					end
+				end
+			end
+			rewards[name] = weight
+		end
+	end
+
+	return rewards
+end
+
 local function isSlotPart(instance: Instance): boolean
 	if not instance:IsA("BasePart") then
 		return false
@@ -958,12 +1117,24 @@ local function cleanupRunnerModel(runner: SlotRunner)
 	end
 end
 
-local function spawnCrateModel(runner: SlotRunner, definition: NormalizedCrateDefinition): (Model?, BasePart?)
-	local template = serviceState.assetTemplates[definition.asset]
+
+local function spawnCrateModel(
+	runner: SlotRunner,
+	definition: NormalizedCrateDefinition,
+	assetTemplates: { [string]: Model }?
+): (Model?, BasePart?)
+	local controller = runner.controller
+	local templateSet = assetTemplates or controller.assetTemplates or serviceState.assetTemplates
+	if not templateSet then
+		return nil, nil
+	end
+
+	local template = templateSet[definition.asset]
 	if not template then
-		if not serviceState.missingAssets[definition.asset] then
-			serviceState.missingAssets[definition.asset] = true
-			warn(string.format("Asset '%s' no encontrado.", definition.asset))
+		local missingKey = string.format("%s::%s", controller.folderName, definition.asset)
+		if not serviceState.missingAssets[missingKey] then
+			serviceState.missingAssets[missingKey] = true
+			warn(string.format("Asset '%s' no encontrado para %s.", definition.asset, controller.folderName))
 		end
 		return nil, nil
 	end
@@ -989,7 +1160,7 @@ local function spawnCrateModel(runner: SlotRunner, definition: NormalizedCrateDe
 		end
 	end
 
-	model.Parent = runner.controller.folder
+	model.Parent = controller.folder
 	attachCrateUi(primary, definition)
 	return model, primary
 end
@@ -1028,13 +1199,46 @@ local function computeCrateCFrames(part: BasePart, primary: BasePart, definition
 	return hiddenCFrame, visibleCFrame
 end
 
-local function selectCrateReward(state: CrateState): string?
-	local rewards = state.rewards
+local function pickRewardFromTable(rewards: { [string]: any }?, rng: Random?): string?
 	if typeof(rewards) ~= "table" then
 		return nil
 	end
 
-	return ChestRewards.pickReward({ Rewards = rewards })
+	local entries = table.create(8)
+	local totalWeight = 0
+	for rewardName, rawWeight in rewards do
+		if typeof(rewardName) == "string" then
+			local numericWeight = tonumber(rawWeight)
+			if numericWeight and numericWeight > 0 then
+				totalWeight += numericWeight
+				entries[#entries + 1] = {
+					name = rewardName,
+					weight = numericWeight,
+				}
+			end
+		end
+	end
+
+	if totalWeight <= 0 or #entries == 0 then
+		return nil
+	end
+
+	local randomGenerator = rng or serviceState.globalRng
+	local roll = randomGenerator:NextNumber(0, totalWeight)
+	local accumulated = 0
+	for _, entry in entries do
+		accumulated += entry.weight
+		if roll <= accumulated then
+			return entry.name
+		end
+	end
+
+	return entries[#entries].name
+end
+
+local function selectCrateReward(state: CrateState): string?
+	local rewards = state.rewards
+	return pickRewardFromTable(rewards, state.runner and state.runner.rng)
 end
 
 local function buildCrateDetectionDetail(state: CrateState): { [string]: any }?
@@ -1182,7 +1386,6 @@ local function handleCrateDestroyed(state: CrateState, player: Player?): string?
 	state.health = 0
 	updateCrateAttributes(state)
 	refreshCrateUi(state)
-	flashCrateHighlight(state, HIGHLIGHT_DAMAGE_COLOR)
 
 	local rewardName = selectCrateReward(state)
 	if rewardName and player then
@@ -1261,7 +1464,7 @@ local function runnerLoop(runner: SlotRunner)
 			continue
 		end
 
-		local model, primary = spawnCrateModel(runner, definition)
+		local model, primary = spawnCrateModel(runner, definition, runner.controller.assetTemplates)
 		if not model or not primary then
 			if not waitWithAbort(runner, settings.fallbackCooldown) then
 				clearCrateState(true)
@@ -1480,16 +1683,22 @@ local function destroyController(controller: SlotController)
 	end
 	controller.connections = {}
 
-	serviceState.controllers[controller.slot] = nil
+	serviceState.controllers[controller.key] = nil
 end
 
-local function createSlotController(slot: PlotSlot): SlotController?
+type SlotControllerOptions = {
+	rewardOverrides: { [string]: number }?,
+	slotWhitelist: { [number]: boolean }?,
+	assetTemplates: { [string]: Model }?,
+}
+
+local function createSlotController(slot: PlotSlot, folderName: string, options: SlotControllerOptions?): SlotController?
 	local slotFolder = slot:GetFolder()
 	if not slotFolder then
 		return nil
 	end
 
-	local crateFolder = slotFolder:FindFirstChild("CrateTopo")
+	local crateFolder = slotFolder:FindFirstChild(folderName)
 	if not crateFolder or not crateFolder:IsA("Folder") then
 		return nil
 	end
@@ -1502,10 +1711,27 @@ local function createSlotController(slot: PlotSlot): SlotController?
 		slotIndex = value
 	end
 
+	if options and options.slotWhitelist then
+		if not slotIndex or not options.slotWhitelist[slotIndex] then
+			return nil
+		end
+	end
+
+	local controllerKey = string.format("%s::%s", slotFolder:GetFullName(), folderName)
+	local rewardOverrides = if options then options.rewardOverrides else nil
+	local assetTemplates = if options and options.assetTemplates then options.assetTemplates else serviceState.assetTemplates
+	if not assetTemplates then
+		return nil
+	end
+
 	local controller: SlotController = {
+		key = controllerKey,
 		slot = slot,
 		slotIndex = slotIndex,
+		folderName = folderName,
 		folder = crateFolder,
+		rewardOverrides = rewardOverrides,
+		assetTemplates = assetTemplates,
 		ownerId = slot:GetOwnerId(),
 		active = false,
 		destroyed = false,
@@ -1598,21 +1824,40 @@ local function updateControllerOwnership(controller: SlotController, forceStart:
 end
 
 local function refreshControllers(forceStart: boolean)
-	for slot, controller in pairs(serviceState.controllers) do
+	for key, controller in pairs(serviceState.controllers) do
 		if controller.destroyed then
-			serviceState.controllers[slot] = nil
+			serviceState.controllers[key] = nil
 		else
 			updateControllerOwnership(controller, forceStart)
 		end
 	end
 end
 
+local function registerController(controller: SlotController?)
+	if not controller then
+		return
+	end
+
+	serviceState.controllers[controller.key] = controller
+end
+
 local function buildControllers()
 	local slots = PlotRegistry.GetSlots()
+	local gunRewards = serviceState.gunRewards
+	local gunTemplates = serviceState.gunAssetTemplates
+	local enableGunControllers = gunRewards ~= nil and next(gunRewards) ~= nil and gunTemplates ~= nil
+
 	for _, slot in slots do
-		local controller = createSlotController(slot)
-		if controller then
-			serviceState.controllers[slot] = controller
+		registerController(createSlotController(slot, DEFAULT_CRATE_FOLDER_NAME, nil))
+
+		if enableGunControllers then
+			registerController(
+				createSlotController(slot, GUN_CRATE_FOLDER_NAME, {
+					rewardOverrides = gunRewards,
+					slotWhitelist = GUN_SLOT_WHITELIST,
+					assetTemplates = gunTemplates,
+				})
+			)
 		end
 	end
 end
@@ -1721,7 +1966,7 @@ function CrateTopoService.ApplyDamage(crateId: string, amount: number, metadata:
 	state.health = newHealth
 	updateCrateAttributes(state)
 	refreshCrateUi(state)
-	flashCrateHighlight(state, HIGHLIGHT_DAMAGE_COLOR)
+	playCrateHitAnimation(state)
 
 	if newHealth <= 0 then
 		local rewardName = handleCrateDestroyed(state, player)
@@ -1756,9 +2001,24 @@ function CrateTopoService.Init(overrides: { [string]: any }?)
 	serviceState.assetFolder = assetFolder
 	serviceState.assetTemplates = loadAssetTemplates(assetFolder)
 
+	local gunAssetFolder = resolveAssetsFolder("GunCrates")
+	serviceState.gunAssetFolder = gunAssetFolder
+	if gunAssetFolder then
+		serviceState.gunAssetTemplates = loadAssetTemplates(gunAssetFolder)
+	else
+		serviceState.gunAssetTemplates = nil
+	end
+
 	local pool, totalWeight = buildCratePool(settings, catalogTable.Crates)
 	serviceState.cratePool = pool
 	serviceState.totalWeight = totalWeight
+
+	local gunRewards = buildGunRewardTable(AmmoBuildings)
+	if gunRewards and next(gunRewards) ~= nil then
+		serviceState.gunRewards = gunRewards
+	else
+		serviceState.gunRewards = nil
+	end
 
 	if totalWeight <= 0 then
 		warn("No se encontraron crates configurados.")

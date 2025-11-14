@@ -138,6 +138,7 @@ function Controller.new()
 	self._rotation = 0
 	self._ghostModel = nil
 	self._ghostParts = {}
+	self._ghostRootParts = {}
 	self._ghostHighlight = nil
 	self._blockedCells = {}
 	self._blockedZones = {}
@@ -611,6 +612,7 @@ function Controller:_setGhostModel(model: Model?)
 
 	self._ghostModel = model
 	self._ghostParts = {}
+	self._ghostRootParts = {}
 	self._ghostHighlight = nil
 
 	if not model then
@@ -620,6 +622,8 @@ function Controller:_setGhostModel(model: Model?)
 	local parent = Workspace.CurrentCamera or Workspace
 	model.Parent = parent
 
+	local rootName = (Constants and Constants.ASSET_ROOT_NAME) or "RootPart"
+	local primary = model.PrimaryPart
 	for _, descendant in model:GetDescendants() do
 		if descendant:IsA("BasePart") then
 			descendant.Material = Enum.Material.SmoothPlastic
@@ -628,7 +632,18 @@ function Controller:_setGhostModel(model: Model?)
 			descendant.CanQuery = false
 			descendant.Anchored = true
 			descendant.CastShadow = false
-			descendant.Transparency = 0.4
+			local isRoot = false
+			if primary and descendant == primary then
+				isRoot = true
+			elseif descendant.Name == rootName then
+				isRoot = true
+			end
+			if isRoot then
+				self._ghostRootParts[descendant] = true
+				descendant.Transparency = 1
+			else
+				descendant.Transparency = 0.4
+			end
 			table.insert(self._ghostParts, descendant)
 		end
 	end
@@ -1265,9 +1280,14 @@ function Controller:_setGhostTint(color: Color3, transparency: number)
 		self._ghostHighlight.FillTransparency = math.clamp(transparency + 0.2, 0, 1)
 	end
 
+	local rootParts = self._ghostRootParts
 	for _, part in self._ghostParts do
 		part.Color = color
-		part.Transparency = transparency
+		if rootParts and rootParts[part] then
+			part.Transparency = 1
+		else
+			part.Transparency = transparency
+		end
 	end
 end
 

@@ -20,7 +20,8 @@ local Profiles = require(ServerScriptService.Work.Modules.Profiles)
 
 local ModulesFolder = script.Parent.Parent:WaitForChild("Modules")
 local GunBuildingServiceModule = ModulesFolder:WaitForChild("GunBuildingService")
-local BrainrotTourismServiceModule = ModulesFolder:WaitForChild("BrainrotTourismService")
+local WaveControllerFolder = ModulesFolder:WaitForChild("WaveController")
+local BrainrotRuntimeModule = WaveControllerFolder:WaitForChild("Runtime")
 local InstanceUtils = require(ModulesFolder:WaitForChild("InstanceUtils"))
 local gunBuildingService: any = nil
 
@@ -1413,7 +1414,6 @@ clearStoredToken = function(session: Session?, token: string?)
 	session.storedTokenMap[token] = nil
 end
 
-local spawnModel = nil
 
 local function applyPlacementUpgrade(session: Session, placementId: string, context)
 	if typeof(context) ~= "table" or typeof(context.nextLevel) ~= "number" then
@@ -1470,6 +1470,7 @@ local function applyPlacementUpgrade(session: Session, placementId: string, cont
 	local uiHandle, healthUi = attachBuildingUI(newModel, assetId, newLevel, previousAccumulated)
 	record.ui = healthUi
 	updatePlacementHealthUi(record)
+	updateProfilePlacementHealth(session, placementId, record)
 	PlacementEarnings.Register({
 		entity = placementEntity,
 		placementId = placementId,
@@ -1603,6 +1604,55 @@ local function placementDataToProfileEntry(data: PlacementData)
 		rotation = data.rotation,
 		level = math.max(1, tonumber(data.level) or 1),
 	}
+end
+
+local function ensurePlacementStateContainer(profileData: any)
+	if typeof(profileData) ~= "table" then
+		return nil
+	end
+
+	local placementState = profileData.placement
+	if typeof(placementState) ~= "table" then
+		placementState = {
+			objects = {},
+			zones = { version = 1, unlocked = {} },
+		}
+		profileData.placement = placementState
+	end
+
+	placementState.objects = placementState.objects or {}
+	if typeof(placementState.zones) ~= "table" then
+		placementState.zones = { version = 1, unlocked = {} }
+	end
+	placementState.zones.unlocked = placementState.zones.unlocked or {}
+
+	return placementState
+end
+
+local function updateProfilePlacementHealth(session: Session, placementId: string, record: PlacementRecord)
+	local profile = session.profile
+	local profileData = profile and profile.Data
+	if typeof(profileData) ~= "table" then
+		return
+	end
+
+	local placementState = ensurePlacementStateContainer(profileData)
+	if not placementState then
+		return
+	end
+
+	local entry = findProfilePlacementEntry(profileData, placementId)
+	if not entry then
+		local serialized = PlacementWorld.SerializePlacement(record.entity)
+		if not serialized then
+			return
+		end
+		entry = placementDataToProfileEntry(serialized)
+		placementState.objects[#placementState.objects + 1] = entry
+	end
+
+	entry.health = math.max(0, math.floor((tonumber(record.health) or 0) + 0.5))
+	entry.maxHealth = math.max(1, math.floor((tonumber(record.maxHealth) or 1) + 0.5))
 end
 
 local function ensurePlacementCells(assetDef, position: Vector2, rotation: number)
@@ -1752,7 +1802,7 @@ local function configurePlacementModel(model: Model)
 	end
 end
 
-function spawnModel(session: Session, assetDef, placementData: PlacementData, orientedFootprint: Vector2)
+local function spawnModel(session: Session, assetDef, placementData: PlacementData, orientedFootprint: Vector2)
 	local model = AssetRegistry.Clone(assetDef.id, placementData.level)
 	if not model then
 		return nil
@@ -2169,6 +2219,10 @@ local function clearSession(player: Player)
 		return
 	end
 
+	for placementId, placementRecord in pairs(session.placements) do
+		updateProfilePlacementHealth(session, placementId, placementRecord)
+	end
+
 	broadcastZoneRemoval(session)
 	local profile = session.profile
 	if profile and typeof(profile.Data) == "table" then
@@ -2254,6 +2308,7 @@ local function applyPlacementDamage(placementEntity: number, amount: number): (b
 	else
 		applyPlacementAttributes(record)
 		updatePlacementHealthUi(record)
+		updateProfilePlacementHealth(session, placementId, record)
 		placementUpdatePacket:Fire("HealthChanged", {
 			id = placementId,
 			remaining = record.health,
@@ -2271,9 +2326,9 @@ local function applyPlacementDamage(placementEntity: number, amount: number): (b
 end
 
 local function configureBrainrotTourismService()
-	local success, service = pcall(require, BrainrotTourismServiceModule)
+	local success, service = pcall(require, BrainrotRuntimeModule)
 	if not success then
-		warn("PlacementService failed to require BrainrotTourismService:", service)
+		warn("PlacementService failed to require Brainrot runtime:", service)
 		return
 	end
 
@@ -2545,6 +2600,7 @@ local function handlePlacementRequest(player: Player, assetId: string, position:
 		id = placementData.id,
 	}
 
+	local profileEntryForSync = nil
 	if reusedEntry then
 		reusedEntry.id = placementData.id
 		reusedEntry.asset = assetId
@@ -2553,9 +2609,19 @@ local function handlePlacementRequest(player: Player, assetId: string, position:
 		reusedEntry.level = placementLevel
 		reusedEntry.stored = nil
 		reusedEntry.token = nil
+		profileEntryForSync = reusedEntry
 	else
-		local profileEntry = placementDataToProfileEntry(placementData)
-		table.insert(session.profile.Data.placement.objects, profileEntry)
+		local placementState = ensurePlacementStateContainer(profileData)
+		if placementState then
+			local profileEntry = placementDataToProfileEntry(placementData)
+			table.insert(placementState.objects, profileEntry)
+			profileEntryForSync = profileEntry
+		end
+	end
+
+	if profileEntryForSync then
+		profileEntryForSync.health = placementHealth
+		profileEntryForSync.maxHealth = maxHealth
 	end
 
 	clearStoredToken(session, toolToken)
@@ -2643,7 +2709,7 @@ zonePurchasePacket.OnServerInvoke = function(player: Player, zoneId)
 		return false, "Zona ya desbloqueada"
 	end
 
-	local price = LockedZonePrices[zoneId]
+	local price = LockedZonePrices.GetPrice(zoneId)
 	if typeof(price) ~= "number" then
 		return false, "Precio no configurado"
 	end

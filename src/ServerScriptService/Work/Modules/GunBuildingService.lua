@@ -7,7 +7,8 @@ local ModulesFolder = ServerScriptService:WaitForChild("Work"):WaitForChild("Mod
 local AmmoBuildings = require(ReplicatedStorage:WaitForChild("Data"):WaitForChild("AmmoBuildings"))
 local AmmoBuildingPackets = require(ReplicatedStorage:WaitForChild("Network"):WaitForChild("AmmoBuildingPackets"))
 local RunServiceScheduler = require(ModulesFolder:WaitForChild("RunServiceScheduler"))
-local BrainrotTourismServiceModule = ModulesFolder:WaitForChild("BrainrotTourismService")
+local WaveControllerFolder = ModulesFolder:WaitForChild("WaveController")
+local BrainrotRuntimeModule = WaveControllerFolder:WaitForChild("Runtime")
 local InstanceUtils = require(ModulesFolder:WaitForChild("InstanceUtils"))
 local tourismService: any = nil
 
@@ -15,7 +16,7 @@ local findFirstDescendant = InstanceUtils.findFirstDescendant
 
 local function getBrainrotTourismService()
     if not tourismService then
-        tourismService = require(BrainrotTourismServiceModule)
+        tourismService = require(BrainrotRuntimeModule)
     end
     return tourismService
 end
@@ -95,17 +96,31 @@ type ActiveAgent = {
     ownerUserId: number?,
 }
 
+type PendingHit = {
+    remaining: number,
+    targetId: string,
+    damage: number,
+    metadata: {
+        placementId: string,
+        assetId: string,
+        ownerUserId: number?,
+    },
+}
+
 local registerPlacement: (RegisterParams) -> ()
 local unregisterPlacement: (number | string) -> ()
 local applyDamage: (string, number) -> (boolean, number)
 local getStateByPlacementId: (string) -> GunState?
 local initService: () -> ()
+local ensureScheduler: () -> ()
 
 local defCache: { [string]: { [number]: GunDefinition | false } } = {}
 local activeByEntity: { [number]: GunState } = {}
 local activeByPlacementId: { [string]: GunState } = {}
 local schedulerHandle: SchedulerHandle? = nil
 local gunUiTemplate: BillboardGui? = nil
+local gunUiPool: { BillboardGui } = {}
+local pendingHits: { PendingHit } = {}
 
 local DEFAULT_COOLDOWN = 0.6
 local DEFAULT_RELOAD = 3
@@ -122,7 +137,7 @@ local MIN_TRAVEL_TIME = 0.05
 local UPDATE_INTERVAL = 0.1
 
 local function ensureGunUiTemplate(): BillboardGui
-    if gunUiTemplate and gunUiTemplate.Parent then
+    if gunUiTemplate then
         return gunUiTemplate
     end
 
@@ -189,6 +204,23 @@ local function ensureGunUiTemplate(): BillboardGui
 
     gunUiTemplate = billboard
     return billboard
+end
+
+local function acquireGunUiHandle(): BillboardGui
+    local handle = table.remove(gunUiPool)
+    if handle then
+        return handle
+    end
+
+    local template = ensureGunUiTemplate()
+    return template:Clone()
+end
+
+local function releaseGunUiHandle(handle: BillboardGui)
+    handle.Enabled = true
+    handle.Adornee = nil
+    handle.Parent = nil
+    gunUiPool[#gunUiPool + 1] = handle
 end
 
 local function broadcastProjectile(state: GunState, origin: Vector3, targetPosition: Vector3, travelTime: number)
@@ -484,8 +516,7 @@ local function attachUi(state: GunState)
         return
     end
 
-    local template = ensureGunUiTemplate()
-    local uiHandle = template:Clone()
+    local uiHandle = acquireGunUiHandle()
     local root = state.root
 
     if uiHandle:IsA("BillboardGui") then
@@ -524,7 +555,12 @@ local function detachUi(state: GunState)
 
     state.ui = nil
     local container = ui.container
-    if container and container.Parent then
+    if container and container:IsA("BillboardGui") then
+        if container.Parent then
+            container.Parent = nil
+        end
+        releaseGunUiHandle(container)
+    elseif container and container.Parent then
         container:Destroy()
     end
 end
@@ -540,7 +576,7 @@ local function cleanupConnections(state: GunState)
 end
 
 local function cleanupSchedulerIfIdle()
-    if next(activeByEntity) ~= nil then
+    if next(activeByEntity) ~= nil or #pendingHits > 0 then
         return
     end
 
@@ -550,15 +586,129 @@ local function cleanupSchedulerIfIdle()
     end
 end
 
-local function acquireTarget(state: GunState): ActiveAgent?
+local function collectAgentsBySlot(): { [number]: { ActiveAgent } }?
+    if next(activeByEntity) == nil then
+        return nil
+    end
+
+    local service = getBrainrotTourismService()
+    if not service then
+        return nil
+    end
+
+    local getter = (service :: any).GetActiveAgentsForPlot
+    if typeof(getter) ~= "function" then
+        return nil
+    end
+
+    local cache: { [number]: { ActiveAgent } } = {}
+    for _, state in pairs(activeByEntity) do
+        local slotIndex = state.slotIndex
+        if slotIndex and cache[slotIndex] == nil then
+            local success, agents = pcall(getter, slotIndex)
+            if success and typeof(agents) == "table" then
+                cache[slotIndex] = agents
+            else
+                cache[slotIndex] = {}
+            end
+        end
+    end
+
+    return cache
+end
+
+local function resolvePendingHit(hit: PendingHit)
+    local service = getBrainrotTourismService()
+    if not service then
+        return
+    end
+
+    local applyDamageFn = (service :: any).ApplyDamage
+    if typeof(applyDamageFn) == "function" then
+        local success, applied = pcall(applyDamageFn, hit.targetId, hit.damage, hit.metadata)
+        if success and applied == true then
+            return
+        end
+    end
+
+    local removeAgent = (service :: any).RemoveAgent
+    if typeof(removeAgent) == "function" then
+        removeAgent(hit.targetId, "GunHit")
+    end
+end
+
+local function advancePendingHits(delta: number)
+    if delta <= 0 or #pendingHits == 0 then
+        return
+    end
+
+    local index = #pendingHits
+    while index >= 1 do
+        local hit = pendingHits[index]
+        if hit then
+            hit.remaining -= delta
+            if hit.remaining <= 0 then
+                pendingHits[index] = pendingHits[#pendingHits]
+                pendingHits[#pendingHits] = nil
+                resolvePendingHit(hit)
+                if index > #pendingHits then
+                    index = #pendingHits
+                end
+            else
+                index -= 1
+            end
+        else
+            index -= 1
+        end
+    end
+
+    cleanupSchedulerIfIdle()
+end
+
+local function enqueuePendingHit(state: GunState, travelTime: number, targetId: string, damage: number)
+    if travelTime <= 0 then
+        resolvePendingHit({
+            remaining = 0,
+            targetId = targetId,
+            damage = damage,
+            metadata = {
+                placementId = state.placementId,
+                assetId = state.assetId,
+                ownerUserId = state.ownerUserId,
+            },
+        })
+        return
+    end
+
+    pendingHits[#pendingHits + 1] = {
+        remaining = travelTime,
+        targetId = targetId,
+        damage = damage,
+        metadata = {
+            placementId = state.placementId,
+            assetId = state.assetId,
+            ownerUserId = state.ownerUserId,
+        },
+    }
+
+    ensureScheduler()
+end
+
+local function acquireTarget(state: GunState, agentsBySlot: { [number]: { ActiveAgent } }?): ActiveAgent?
     local slotIndex = state.slotIndex
     local root = state.muzzle or state.root
     if not slotIndex or not root then
         return nil
     end
 
-    local service = getBrainrotTourismService()
-    local agents = service.GetActiveAgentsForPlot(slotIndex)
+    local agents: { ActiveAgent }
+    if agentsBySlot then
+        agents = agentsBySlot[slotIndex] or {}
+    else
+        local service = getBrainrotTourismService()
+        agents = service.GetActiveAgentsForPlot(slotIndex)
+    end
+
     if #agents == 0 then
         return nil
     end
@@ -599,34 +749,12 @@ local function fireAtTarget(state: GunState, agent: ActiveAgent): boolean
 
     local targetId = agent.id
     local projectileDamage = math.max(1, math.floor((state.definition.damage or DEFAULT_DAMAGE) + 0.5))
-    task.delay(travelTime, function()
-        local service = getBrainrotTourismService()
-        if not service then
-            return
-        end
-
-        local applyDamage = (service :: any).ApplyDamage
-        if typeof(applyDamage) == "function" then
-            local success, _ = applyDamage(targetId, projectileDamage, {
-                placementId = state.placementId,
-                assetId = state.assetId,
-                ownerUserId = state.ownerUserId,
-            })
-            if success then
-                return
-            end
-        end
-
-        local removeAgent = (service :: any).RemoveAgent
-        if typeof(removeAgent) == "function" then
-            removeAgent(targetId, "GunHit")
-        end
-    end)
+    enqueuePendingHit(state, travelTime, targetId, projectileDamage)
 
     return true
 end
 
-local function stepGun(state: GunState, delta: number)
+local function stepGun(state: GunState, delta: number, agentsBySlot: { [number]: { ActiveAgent } }?)
     if state.disabled then
         return
     end
@@ -653,7 +781,7 @@ local function stepGun(state: GunState, delta: number)
         return
     end
 
-    local target = acquireTarget(state)
+    local target = acquireTarget(state, agentsBySlot)
     if not target then
         return
     end
@@ -670,23 +798,25 @@ local function stepGun(state: GunState, delta: number)
 end
 
 local function tickGuns(totalDelta: number, ticks: number)
-    if next(activeByEntity) == nil then
-        return
-    end
+    local hasActiveGuns = next(activeByEntity) ~= nil
 
-    local steps = math.max(1, math.floor(ticks + 0.5))
-    local stepDelta = totalDelta / steps
+    if hasActiveGuns then
+        local steps = math.max(1, math.floor(ticks + 0.5))
+        local stepDelta = totalDelta / steps
+        local agentsBySlot = collectAgentsBySlot()
 
-    for _, state in pairs(activeByEntity) do
-        for _ = 1, steps do
-            stepGun(state, stepDelta)
+        for _, state in pairs(activeByEntity) do
+            for _ = 1, steps do
+                stepGun(state, stepDelta, agentsBySlot)
+            end
         end
     end
 
+    advancePendingHits(totalDelta)
     cleanupSchedulerIfIdle()
 end
 
-local function ensureScheduler()
+ensureScheduler = function()
     if schedulerHandle then
         return
     end

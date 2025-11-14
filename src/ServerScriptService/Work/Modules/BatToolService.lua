@@ -7,29 +7,29 @@ local Debris = game:GetService("Debris")
 local ModulesFolder = script.Parent :: Folder
 local WorkFolder = ModulesFolder.Parent :: Instance
 local PlacementFolder = (WorkFolder:WaitForChild("Placement") :: Folder)
-local StoresFolder = (WorkFolder:WaitForChild("Stores") :: Folder)
 local NetworkFolder = ReplicatedStorage:WaitForChild("Network") :: Folder
 
-local BrainrotTourismServiceModule = ModulesFolder:WaitForChild("BrainrotTourismService") :: ModuleScript
+local WaveControllerFolder = ModulesFolder:WaitForChild("WaveController")
+local BrainrotRuntimeModule = WaveControllerFolder:WaitForChild("Runtime")
 local PlotRegistryModule = PlacementFolder:WaitForChild("PlotRegistry") :: ModuleScript
 local BatToolPacketsModule = NetworkFolder:WaitForChild("BatToolPackets") :: ModuleScript
-local ChestServiceModule = StoresFolder:WaitForChild("ChestService") :: ModuleScript
 local CrateTopoServiceModule = ModulesFolder:WaitForChild("CrateTopoService") :: ModuleScript
 
-local BrainrotTourismService = require(BrainrotTourismServiceModule) :: any
+local BrainrotTourismService = require(BrainrotRuntimeModule) :: any
 local PlotRegistry = require(PlotRegistryModule) :: any
 local BatToolPackets = require(BatToolPacketsModule) :: any
-local ChestService = require(ChestServiceModule) :: any
 local CrateTopoService = require(CrateTopoServiceModule) :: any
 
 local BatToolService = {}
 
 local DETECTION_DURATION = 0.25
-local HITBOX_SIZE = Vector3.new(6, 6, 6)
+local HITBOX_SIZE = Vector3.new(10, 10, 10)
 local HITBOX_HALF_SIZE = HITBOX_SIZE * 0.5
-local HITBOX_MARGIN = 0.75
 local HITBOX_OFFSET = Vector3.new(0, 0, -3)
-local MAX_DETECTION_RADIUS = HITBOX_HALF_SIZE.Magnitude + 4
+local HITBOX_TOLERANCE = 0.35
+local HITBOX_CORNER_TOLERANCE = 1.5
+local HITBOX_CORNER_RADIUS = HITBOX_HALF_SIZE.Magnitude
+local FALLBACK_SEARCH_PADDING = Vector3.new(6, 6, 6)
 local DAMAGE_MIN = 10
 local DAMAGE_MAX = 18
 
@@ -51,6 +51,20 @@ local function asVector3(value: any): Vector3?
 		return value
 	end
 	return nil
+end
+
+local function clampToHitbox(localPoint: Vector3): Vector3
+	return Vector3.new(
+		math.clamp(localPoint.X, -HITBOX_HALF_SIZE.X, HITBOX_HALF_SIZE.X),
+		math.clamp(localPoint.Y, -HITBOX_HALF_SIZE.Y, HITBOX_HALF_SIZE.Y),
+		math.clamp(localPoint.Z, -HITBOX_HALF_SIZE.Z, HITBOX_HALF_SIZE.Z)
+	)
+end
+
+local function withinAabb(localPoint: Vector3, halfSize: Vector3, padding: number): boolean
+	return math.abs(localPoint.X) <= halfSize.X + padding
+		and math.abs(localPoint.Y) <= halfSize.Y + padding
+		and math.abs(localPoint.Z) <= halfSize.Z + padding
 end
 
 local DetectionSession = {}
@@ -107,7 +121,7 @@ function DetectionSession:spawnHitbox()
 	hitbox.Name = "BatDetectionHitbox"
 	hitbox.Size = HITBOX_SIZE
 	hitbox.Material = Enum.Material.ForceField
-	hitbox.Transparency = 0
+	hitbox.Transparency = 1
 	hitbox.CanCollide = false
 	hitbox.CanTouch = false
 	hitbox.CanQuery = false
@@ -167,177 +181,121 @@ function DetectionSession:execute()
 	self:spawnHitbox()
 
 	local detectionCFrame = self:getDetectionCFrame()
-	local halfSize = Vector3.new(
-		HITBOX_HALF_SIZE.X + HITBOX_MARGIN,
-		HITBOX_HALF_SIZE.Y + HITBOX_MARGIN,
-		HITBOX_HALF_SIZE.Z + HITBOX_MARGIN
-	)
-	local sphereRadius = math.min(MAX_DETECTION_RADIUS, math.max(halfSize.X, halfSize.Z))
-	local maxHorizontalRange = math.max(halfSize.X, halfSize.Z)
 	local rejections = {}
 	local damageAppliedCount = 0
-	local function computeClosest(detail: AgentDetail?): (number?, Vector3?, string?)
-		if typeof(detail) ~= "table" then
-			return nil, nil, nil
-		end
 
-		local closestDistance: number? = nil
-		local closestRelative: Vector3? = nil
-		local closestKey: string? = nil
-
-		local function evaluate(key: string, worldPoint: any)
-			if typeof(worldPoint) ~= "Vector3" then
-				return
-			end
-
-			local castPoint: Vector3 = worldPoint :: Vector3
-			local delta: Vector3 = castPoint - detectionCFrame.Position
-			local distance = delta.Magnitude
-			if not closestDistance or distance < closestDistance then
-				closestDistance = distance
-				closestRelative = detectionCFrame:PointToObjectSpace(castPoint)
-				closestKey = key
+	local function gatherSamplePoints(detail: AgentDetail): { { point: Vector3, label: string } }
+		local samples = {}
+		local function push(value: any, label: string)
+			if typeof(value) == "Vector3" then
+				samples[#samples + 1] = { point = value :: Vector3, label = label }
 			end
 		end
 
-		evaluate("position", detail.position)
-		evaluate("target", detail.targetPosition)
-		evaluate("anchor", detail.attackAnchor)
+		push(detail.position, "position")
+		push(detail.targetPosition, "target")
+		push(detail.attackAnchor, "anchor")
 
-		return closestDistance, closestRelative, closestKey
+		return samples
 	end
 
-	local function recordRejection(detail: AgentDetail?, reason: string)
+	local function evaluateCandidate(detail: AgentDetail): (AgentDetail?, { [string]: any }?)
+		local copy = shallowCopy(detail)
+		local samples = gatherSamplePoints(detail)
+		local bestDistance: number? = nil
+		local bestLabel: string? = nil
+
+		local function accept(localPoint: Vector3, label: string, distance: number, clampResult: boolean)
+			copy.relativePosition = if clampResult then clampToHitbox(localPoint) else localPoint
+			copy.hitContext = label
+			copy.distanceFromCenter = distance
+			return copy, nil
+		end
+
+		local function consider(worldPoint: Vector3?, label: string, extentsPadding: Vector3?)
+			if typeof(worldPoint) ~= "Vector3" then
+				return nil
+			end
+
+			local distance = (worldPoint - detectionCFrame.Position).Magnitude
+			if not bestDistance or distance < bestDistance then
+				bestDistance = distance
+				bestLabel = label
+			end
+
+			local localPoint = detectionCFrame:PointToObjectSpace(worldPoint)
+			local halfSize = HITBOX_HALF_SIZE
+			local clampResult = false
+			local extraRadius = 0
+			if extentsPadding then
+				halfSize += extentsPadding
+				clampResult = true
+				extraRadius = extentsPadding.Magnitude
+			end
+
+			if withinAabb(localPoint, halfSize, HITBOX_TOLERANCE) then
+				return accept(localPoint, label, distance, clampResult)
+			end
+
+			local allowedRadius = HITBOX_CORNER_RADIUS + HITBOX_CORNER_TOLERANCE + extraRadius
+			if distance <= allowedRadius then
+				return accept(localPoint, label .. "_corner", distance, true)
+			end
+
+			return nil
+		end
+
+		for _, sample in ipairs(samples) do
+			local accepted = consider(sample.point, sample.label, nil)
+			if accepted then
+				return accepted
+			end
+		end
+
+		local extents = asVector3(detail.extents)
+		local positionVector = if typeof(detail.position) == "Vector3" then detail.position :: Vector3 else nil
+		if extents and positionVector then
+			local accepted = consider(positionVector, "extents", extents)
+			if accepted then
+				return accepted
+			end
+		end
+
+		return nil, {
+			reason = "out_of_hitbox",
+			distance = bestDistance,
+			reference = bestLabel,
+		}
+	end
+
+	local function recordRejection(detail: AgentDetail?, info: any)
 		if not detail then
 			return
 		end
 		if #rejections >= 5 then
 			return
 		end
-		local distance, relative, key = computeClosest(detail)
-		rejections[#rejections + 1] = {
+
+		local entry: { [string]: any } = {
 			id = detail.id,
-			reason = reason,
-			distance = distance,
-			relative = relative,
-			reference = key,
-		}
-	end
-
-	local function evaluatePoint(point: Vector3?, pointKind: string): (Vector3?, string?)
-		if typeof(point) ~= "Vector3" then
-			return nil, nil
-		end
-
-		local castPoint: Vector3 = point :: Vector3
-		local relative = (detectionCFrame:PointToObjectSpace(castPoint)) :: Vector3
-		if math.abs(relative.X) <= halfSize.X
-			and math.abs(relative.Y) <= halfSize.Y
-			and math.abs(relative.Z) <= halfSize.Z
-		then
-			return relative, pointKind .. ":box"
-		end
-
-		local horizontalDistance = math.sqrt(relative.X * relative.X + relative.Z * relative.Z)
-		if horizontalDistance <= maxHorizontalRange and math.abs(relative.Y) <= halfSize.Y then
-			return relative, pointKind .. ":cylinder"
-		end
-
-		return nil, nil
-	end
-
-	local function evaluateCandidate(detail: AgentDetail): (AgentDetail?, string?)
-		local position = detail.position
-		local targetPosition = detail.targetPosition
-		local anchorPosition = detail.attackAnchor
-		local extents = asVector3(detail.extents)
-
-		local positionVector = asVector3(position)
-		local centerRelative: Vector3? = nil
-		if positionVector then
-			centerRelative = (detectionCFrame:PointToObjectSpace(positionVector)) :: Vector3
-		end
-
-		local checkpoints = {
-			{ key = "position", point = position },
-			{ key = "target", point = targetPosition },
-			{ key = "anchor", point = anchorPosition },
+			reason = "filtered",
 		}
 
-		local relative: Vector3? = nil
-		local hitKind: string? = nil
-		local referencePoint: Vector3? = nil
-
-		if centerRelative and extents and positionVector then
-			local overlap = math.abs(centerRelative.X) <= (halfSize.X + extents.X)
-				and math.abs(centerRelative.Y) <= (halfSize.Y + extents.Y)
-				and math.abs(centerRelative.Z) <= (halfSize.Z + extents.Z)
-			if overlap then
-				relative = Vector3.new(
-					math.clamp(centerRelative.X, -halfSize.X, halfSize.X),
-					math.clamp(centerRelative.Y, -halfSize.Y, halfSize.Y),
-					math.clamp(centerRelative.Z, -halfSize.Z, halfSize.Z)
-				)
-				hitKind = "extents:overlap"
-				referencePoint = positionVector
+		if typeof(info) == "string" then
+			entry.reason = info
+		elseif typeof(info) == "table" then
+			if info.reason then
+				entry.reason = info.reason
+			end
+			if typeof(info.distance) == "number" then
+				entry.distance = info.distance
+			end
+			if typeof(info.reference) == "string" then
+				entry.reference = info.reference
 			end
 		end
 
-		for _, entry in ipairs(checkpoints) do
-			local candidateRelative, candidateKind = evaluatePoint(entry.point, entry.key)
-			if candidateRelative then
-				relative = candidateRelative
-				hitKind = candidateKind
-				if typeof(entry.point) == "Vector3" then
-					referencePoint = entry.point :: Vector3
-				end
-				break
-			end
-		end
-
-		if not relative then
-			for _, entry in ipairs(checkpoints) do
-				if typeof(entry.point) == "Vector3" then
-					local castPoint: Vector3 = entry.point :: Vector3
-					local fallbackRelative = (detectionCFrame:PointToObjectSpace(castPoint)) :: Vector3
-					if fallbackRelative.Magnitude <= sphereRadius then
-						relative = fallbackRelative
-						hitKind = entry.key .. ":sphere"
-						referencePoint = castPoint
-						break
-					end
-				end
-			end
-		end
-
-		if not relative and centerRelative then
-			local radius = if extents then extents.Magnitude else 0
-
-			if centerRelative.Magnitude <= sphereRadius + radius then
-				relative = Vector3.new(
-					math.clamp(centerRelative.X, -halfSize.X, halfSize.X),
-					math.clamp(centerRelative.Y, -halfSize.Y, halfSize.Y),
-					math.clamp(centerRelative.Z, -halfSize.Z, halfSize.Z)
-				)
-				hitKind = "extents:sphere"
-				referencePoint = positionVector or referencePoint
-			end
-		end
-
-		if not relative then
-			return nil, "out_of_range"
-		end
-
-		local copy = shallowCopy(detail)
-		copy.relativePosition = relative
-		local referenceVector: Vector3? = referencePoint or (typeof(detail.position) == "Vector3" and detail.position :: Vector3 or nil)
-		if referenceVector then
-			copy.distanceFromCenter = (referenceVector - detectionCFrame.Position).Magnitude
-		else
-			copy.distanceFromCenter = relative.Magnitude
-		end
-		copy.hitContext = hitKind
-		return copy, nil
+		rejections[#rejections + 1] = entry
 	end
 
 	local candidates: { AgentDetail } = {}
@@ -382,21 +340,10 @@ function DetectionSession:execute()
 	end
 
 	local fallbackCandidateCount = 0
-	local fallbackSearchSize = Vector3.new(
-		math.max(HITBOX_SIZE.X, sphereRadius * 2),
-		math.max(HITBOX_SIZE.Y, sphereRadius * 2),
-		math.max(HITBOX_SIZE.Z, sphereRadius * 2)
-	)
+	local fallbackSearchSize = HITBOX_SIZE + FALLBACK_SEARCH_PADDING
 	for _, detail in ipairs(BrainrotTourismService.GetAgentsInBox(detectionCFrame, fallbackSearchSize)) do
 		if push(detail) then
 			fallbackCandidateCount += 1
-		end
-	end
-
-	local chestCandidateCount = 0
-	for _, detail in ipairs(ChestService.GetChestTargetsForOwner(self.player.UserId)) do
-		if push(detail) then
-			chestCandidateCount += 1
 		end
 	end
 
@@ -420,13 +367,7 @@ function DetectionSession:execute()
 			local appliedDamage = 0
 			local extras: { [string]: any }? = nil
 			if damageAmount > 0 then
-				if targetKind == "Chest" then
-					damageSuccess, remainingHealth, appliedDamage = ChestService.ApplyDamage(copy.id, damageAmount, {
-						tool = "Bat",
-						attacker = self.player.UserId,
-						reference = "BatHit",
-					})
-				elseif targetKind == "CrateTopo" then
+				if targetKind == "CrateTopo" then
 					damageSuccess, remainingHealth, appliedDamage, extras = CrateTopoService.ApplyDamage(copy.id, damageAmount, {
 						tool = "Bat",
 						attacker = self.player.UserId,
@@ -449,7 +390,7 @@ function DetectionSession:execute()
 
 			if damageSuccess then
 				local dealt
-				if targetKind == "Chest" or targetKind == "CrateTopo" then
+				if targetKind == "CrateTopo" then
 					dealt = appliedDamage
 				else
 					dealt = damageAmount
@@ -494,7 +435,6 @@ function DetectionSession:execute()
 		ownerCandidates = ownerCandidateCount,
 		plotCandidates = plotCandidateCount,
 		fallbackCandidates = fallbackCandidateCount,
-		chestCandidates = chestCandidateCount,
 		crateCandidates = crateCandidateCount,
 		totalCandidates = #candidates,
 		detected = #detected,

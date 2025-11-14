@@ -26,6 +26,9 @@ type ProjectileState = {
 
 local projectileFolder: Folder? = nil
 local activeProjectiles: {[BasePart]: ProjectileState} = {}
+local projectilePool: {BasePart} = {}
+
+local MAX_PROJECTILE_POOL = 300
 
 local function ensureProjectileFolder(): Folder
 	local existing = projectileFolder
@@ -47,9 +50,42 @@ local function ensureProjectileFolder(): Folder
 end
 
 
-local function destroyProjectile(projectile: BasePart)
+local function createProjectileInstance(): BasePart
+	local projectile = Instance.new("Part")
+	projectile.Name = "GunProjectile"
+	projectile.Anchored = true
+	projectile.CanCollide = false
+	projectile.CanTouch = false
+	projectile.CanQuery = false
+	projectile.Material = Enum.Material.Neon
+	projectile.CastShadow = false
+	return projectile
+end
+
+local function acquireProjectile(): BasePart
+	local projectile = table.remove(projectilePool)
+	if projectile then
+		projectile.Anchored = true
+		projectile.CanCollide = false
+		projectile.CanTouch = false
+		projectile.CanQuery = false
+		projectile.Parent = ensureProjectileFolder()
+		return projectile
+	end
+
+	projectile = createProjectileInstance()
+	projectile.Parent = ensureProjectileFolder()
+	return projectile
+end
+
+local function releaseProjectile(projectile: BasePart)
 	activeProjectiles[projectile] = nil
-	projectile:Destroy()
+	if #projectilePool < MAX_PROJECTILE_POOL then
+		projectile.Parent = nil
+		projectilePool[#projectilePool + 1] = projectile
+	else
+		projectile:Destroy()
+	end
 end
 
 RunService.Heartbeat:Connect(function(deltaTime)
@@ -87,7 +123,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 
 	for _, projectile in ipairs(toDestroy) do
 		if activeProjectiles[projectile] then
-			destroyProjectile(projectile)
+			releaseProjectile(projectile)
 		else
 			projectile:Destroy()
 		end
@@ -186,19 +222,11 @@ AmmoBuildingPackets.ProjectileFired.OnClientEvent:Connect(function(payload)
 
 	local directionUnit = direction.Unit
 
-	local projectile = Instance.new("Part")
-	projectile.Name = "GunProjectile"
-	projectile.Anchored = true
-	projectile.CanCollide = false
-	projectile.CanTouch = false
-	projectile.CanQuery = false
-	projectile.Material = Enum.Material.Neon
+	local projectile = acquireProjectile()
 	projectile.Size = size
 	projectile.Color = color
 	projectile.Transparency = transparency
-	projectile.CastShadow = false
 	projectile.CFrame = CFrame.lookAt(origin, origin + directionUnit)
-	projectile.Parent = ensureProjectileFolder()
 
 	activeProjectiles[projectile] = {
 		origin = origin,

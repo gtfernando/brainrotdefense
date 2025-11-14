@@ -15,3 +15,6 @@ rojo serve
 ```
 
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
+
+## Brainrot customization
+See [`docs/brainrot-customization.md`](docs/brainrot-customization.md) for a breakdown of how to edit boss stats, per-wave counts, and other Brainrot-specific tuning values.

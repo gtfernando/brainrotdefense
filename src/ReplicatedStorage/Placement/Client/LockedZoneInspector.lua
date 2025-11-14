@@ -466,7 +466,7 @@ function HoverMouse:_clearHover()
 end
 
 function HoverMouse:_getZonePrice(zoneId: string)
-	return LockedZonesPrices[zoneId]
+	return LockedZonesPrices.GetPrice(zoneId)
 end
 
 function HoverMouse:_updateZoneUiDisplay(part: BasePart?, zoneId: string, price: number?)

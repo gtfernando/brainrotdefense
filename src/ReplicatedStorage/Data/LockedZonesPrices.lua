@@ -22,4 +22,46 @@ local LockedZonesPrices = {
     LockedZone_25 = 4000,
 }
 
+local function sanitizeId(zoneId)
+    if typeof(zoneId) == "number" then
+        return `LockedZone_{zoneId}`
+    end
+
+    if typeof(zoneId) ~= "string" then
+        return nil
+    end
+
+    if zoneId:find("Static") then
+        return nil
+    end
+
+    local numeric = zoneId:match("LockedZone[_%-]?(%d+)")
+        or zoneId:match("Zone[_%-]?(%d+)")
+        or zoneId:match("(%d+)$")
+
+    if not numeric then
+        return nil
+    end
+
+    local value = tonumber(numeric)
+    if not value then
+        return nil
+    end
+
+    return `LockedZone_{value}`
+end
+
+function LockedZonesPrices.GetPrice(zoneId)
+    if zoneId and LockedZonesPrices[zoneId] then
+        return LockedZonesPrices[zoneId]
+    end
+
+    local canonical = sanitizeId(zoneId)
+    if canonical then
+        return LockedZonesPrices[canonical]
+    end
+
+    return nil
+end
+
 return LockedZonesPrices

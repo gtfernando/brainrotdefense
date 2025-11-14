@@ -1,18 +1,14 @@
 --!strict
 
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Modules = ServerScriptService:WaitForChild("Work"):WaitForChild("Modules")
 
 if RunService:IsClient() then
 	return
 end
 
-local ModulesFolder = script.Parent:FindFirstChild("Modules")
-if not ModulesFolder then
-	warn("CrateTopoBootstrap: Modules folder not available")
-	return
-end
-
-local moduleInstance = ModulesFolder:FindFirstChild("CrateTopoService")
+local moduleInstance = Modules:FindFirstChild("CrateTopoService")
 if not moduleInstance or not moduleInstance:IsA("ModuleScript") then
 	warn("CrateTopoBootstrap: CrateTopoService module not found")
 	return

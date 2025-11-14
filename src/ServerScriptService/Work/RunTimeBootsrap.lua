@@ -7,9 +7,7 @@ if RunService:IsClient() then
 end
 
 local ModulesFolder = script.Parent:WaitForChild("Modules")
-local BrainrotChaosService = require(ModulesFolder:WaitForChild("BrainrotChaosService"))
+local RuntimeFolder = ModulesFolder:WaitForChild("WaveController")
+local Runtime = require(RuntimeFolder:WaitForChild("Runtime"))
 
-BrainrotChaosService.Init({
-	minInterval = 10,
-	maxInterval = 10,
-})
+Runtime.Init()

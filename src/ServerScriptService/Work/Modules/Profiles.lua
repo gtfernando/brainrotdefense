@@ -15,10 +15,6 @@ local PROFILE_TEMPLATE = {
          unlocked = {},
       },
    },
-   Chests = {
-      version = 1,
-      active = {},
-   },
    Inventory = {
       version = 1,
       placementItems = {},
@@ -30,17 +26,18 @@ local PROFILE_TEMPLATE = {
       hasGamepass = false,
    },
    BrainrotProgress = {
-      version = 2,
+      version = 3,
       score = 0,
       defeated = {},
       defeatedIndex = {},
       highestTier = 0,
       lastBoss = "",
+      currentWave = 1,
    },
    Money = 10000000,
 }
 
-local PlayerStore = ProfileStore.New("PlayerStore26", PROFILE_TEMPLATE)
+local PlayerStore = ProfileStore.New("PlayerStore28", PROFILE_TEMPLATE)
 
 export type Profile = {
    Data: any,
